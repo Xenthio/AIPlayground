@@ -15,3 +15,6 @@ TestResults/
 # OS generated files
 .DS_Store
 Thumbs.db
+run_daemon.bat
+run_daemon_hotload.bat
+config.json

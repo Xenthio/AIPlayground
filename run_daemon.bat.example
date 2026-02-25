@@ -1,0 +1,3 @@
+@echo off
+set OPENROUTER_API_KEY=YOUR_OPENROUTER_KEY_HERE
+dotnet run --project src\AIPlayground.Daemon\AIPlayground.Daemon.csproj
