@@ -1,0 +1,17 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+
+# Rider / Visual Studio
+.vs/
+.idea/
+*.user
+*.suo
+
+# Test results
+TestResults/
+*.coverage
+
+# OS generated files
+.DS_Store
+Thumbs.db

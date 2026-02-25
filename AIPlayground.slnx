@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AIPlayground.Daemon/AIPlayground.Daemon.csproj" />
+  </Folder>
+</Solution>
