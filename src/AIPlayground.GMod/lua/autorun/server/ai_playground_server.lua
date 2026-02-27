@@ -116,11 +116,40 @@ local function ConnectToDaemon()
                     
                     local safeCode = string.gsub(script, "AddCSLuaFile%(.-%)", "-- AddCSLuaFile omitted for hotreload")
                     
+                    -- Provide GilbAI compatible environment functions
+                    local env = setmetatable({
+                        RunClientLua = function(code)
+                            net.Start("AIPlayground_RunLuaClient")
+                            net.WriteString(code)
+                            net.Broadcast()
+                        end,
+                        RunSharedLua = function(code)
+                            -- Run on Server
+                            local sharedFunc = CompileString(code, scriptId .. "_Shared", false)
+                            if isstring(sharedFunc) then
+                                print("[AIPlayground] Shared Lua Syntax Error: " .. sharedFunc)
+                                AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sharedFunc .. "\n\nPlease fix the script and try again.")
+                            else
+                                local s, e = pcall(sharedFunc)
+                                if not s then
+                                    print("[AIPlayground] Shared Lua Runtime Error: " .. tostring(e))
+                                    AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nPlease fix the script and try again.")
+                                end
+                            end
+
+                            -- Broadcast to Clients
+                            net.Start("AIPlayground_RunLuaClient")
+                            net.WriteString(code)
+                            net.Broadcast()
+                        end
+                    }, { __index = _G })
+                    
                     local func = CompileString(safeCode, scriptId, false)
                     if isstring(func) then
                         print("[AIPlayground] Lua Syntax Error: " .. func)
                         AskDaemonServer("You got a Server Lua Syntax Error:\n" .. func .. "\n\nPlease fix the script and try again.")
                     else
+                        setfenv(func, env)
                         local success, err = pcall(func)
                         if not success then
                             print("[AIPlayground] Lua Runtime Error: " .. tostring(err))

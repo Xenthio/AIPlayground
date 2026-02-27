@@ -17,7 +17,7 @@ public sealed class ReadFileTool : ITool
     }
 
     public string Name => "read_file";
-    public string Description => "Read the contents of a file so you can inspect its current code before editing it or diagnosing an error. Path is relative to the AIPlayground_Projects root.";
+    public string Description => "Read the contents of a file so you can inspect its current code before editing it or diagnosing an error. Path is relative to your virtual addons root (e.g. `my_cool_addon/lua/weapons/weapon_cool.lua`).";
 
     public object Parameters => JsonNode.Parse("""
     {
@@ -25,7 +25,7 @@ public sealed class ReadFileTool : ITool
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path to read from (e.g., lua/ai_projects/my_project/shared.lua)"
+                "description": "Relative path to read from (e.g. my_cool_addon/lua/weapons/weapon_cool.lua)"
             }
         },
         "required": [ "path" ]
@@ -38,6 +38,14 @@ public sealed class ReadFileTool : ITool
         {
             var root = arguments.RootElement;
             var path = root.GetProperty("path").GetString() ?? "";
+
+            // Modify the path to automatically inject the `~` prefix for the root folder
+            var parts = path.Split('/', '\\');
+            if (parts.Length > 0 && !parts[0].StartsWith("~"))
+            {
+                parts[0] = "~" + parts[0];
+                path = string.Join(Path.DirectorySeparatorChar, parts);
+            }
 
             // Security: Prevent directory traversal
             var fullPath = Path.GetFullPath(Path.Combine(_workspacePath, path));

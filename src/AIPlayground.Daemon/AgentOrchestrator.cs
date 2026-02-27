@@ -7,64 +7,58 @@ using AIPlayground.Daemon.Transports;
 namespace AIPlayground.Daemon;
 
 /// <summary>
-/// A file-based communication bridge for Garry's Mod since HTTP blocks localhost
+/// Orchestrates the Agent workflow between Garry's Mod and the LLM
 /// </summary>
-public sealed class GModFileBridge
+public sealed class AgentOrchestrator
 {
     private readonly IGModTransport _transport;
     private readonly string _addonPath;
     private readonly IBackendProvider _backend;
     private readonly List<ITool> _tools;
     private string _currentModel = "google/gemini-3-flash-preview";
+    private bool _useHistory = true;
 
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingLuaExecution = new();
 
     private readonly string _dataPath;
-    private readonly string _inboxFile;
-    private readonly string _outboxFile;
 
     private readonly string _projectsAddonPath;
-
+    
+    private readonly MemoryRetrievalSystem _memorySystem;
     private readonly List<ChatMessage> _chatHistory = new();
 
-    public GModFileBridge(string gmodBasePath, string addonPath, IBackendProvider backend, IGModTransport transport)
+    public IReadOnlyList<ChatMessage> GetChatHistory() => _chatHistory;
+
+    public AgentOrchestrator(string gmodBasePath, string addonPath, IBackendProvider backend, IGModTransport transport, MemoryRetrievalSystem memorySystem)
     {
         _addonPath = addonPath;
         _backend = backend;
         _transport = transport;
+        _memorySystem = memorySystem;
         _transport.OnPromptReceived += OnPromptReceived;
 
-        // The path to the standalone AIPlayground_Projects addon that Garry's Mod will actually mount
-        _projectsAddonPath = Path.Combine(gmodBasePath, "garrysmod", "addons", "AIPlayground_Projects");
-
-        // Ensure the standalone projects addon exists so the AI has somewhere to write
-        if (!Directory.Exists(_projectsAddonPath))
-        {
-            Console.WriteLine("[Daemon] Creating standalone AIPlayground_Projects addon...");
-            Directory.CreateDirectory(Path.Combine(_projectsAddonPath, "lua", "ai_projects"));
-        }
+        // We'll write directly into garrysmod/addons, but the tools will prepend the ~ internally
+        _projectsAddonPath = Path.Combine(gmodBasePath, "garrysmod", "addons");
 
         // Setup data directory inside Garry's Mod for communication
         _dataPath = Path.Combine(gmodBasePath, "garrysmod", "data", "aiplayground");
         Directory.CreateDirectory(_dataPath);
 
-        _inboxFile = Path.Combine(_dataPath, "inbox.json");
-        _outboxFile = Path.Combine(_dataPath, "outbox.json");
-
-        // Clear old state
-        if (File.Exists(_inboxFile)) File.Delete(_inboxFile);
-        if (File.Exists(_outboxFile)) File.Delete(_outboxFile);
+        // Delete legacy file bridge artifacts
+        var legacyInbox = Path.Combine(_dataPath, "inbox.json");
+        var legacyOutbox = Path.Combine(_dataPath, "outbox.json");
+        if (File.Exists(legacyInbox)) File.Delete(legacyInbox);
+        if (File.Exists(legacyOutbox)) File.Delete(legacyOutbox);
 
         _tools = new List<ITool>
         {
             new WriteFileTool(_projectsAddonPath),
             new AIPlayground.Daemon.Tools.ReadFileTool(_projectsAddonPath),
             new AIPlayground.Daemon.Tools.HotReloadFileTool(_projectsAddonPath, code => _pendingLuaExecution.Enqueue(code)),
-            new AIPlayground.Daemon.Tools.GraduateProjectTool(Path.Combine(gmodBasePath, "garrysmod", "addons")),
             new AIPlayground.Daemon.Tools.ReloadSpawnMenuTool(code => _pendingLuaExecution.Enqueue(code)),
             new AIPlayground.Daemon.Tools.ListFilesTool(_projectsAddonPath),
             new AIPlayground.Daemon.Tools.FileSearchTool(_transport, gmodBasePath),
-            new AIPlayground.Daemon.Tools.RunLuaTool(_transport)
+            new AIPlayground.Daemon.Tools.RecordExampleTool(@"D:\gilbai\examples", memorySystem, this)
         };
     }
 
@@ -122,36 +116,102 @@ public sealed class GModFileBridge
                 return;
             }
 
+            // Intercept !history toggle command
+            if (prompt.StartsWith("!history "))
+            {
+                var toggle = prompt.Substring(9).Trim().ToLower();
+                if (toggle == "off" || toggle == "false")
+                {
+                    _useHistory = false;
+                    _chatHistory.Clear();
+                    Console.WriteLine($"[Daemon] Chat history tracking disabled and cleared.");
+                    await _transport.SendChatAsync("Chat history disabled. Operating in stateless one-shot mode.");
+                }
+                else if (toggle == "on" || toggle == "true")
+                {
+                    _useHistory = true;
+                    Console.WriteLine($"[Daemon] Chat history tracking enabled.");
+                    await _transport.SendChatAsync("Chat history enabled.");
+                }
+                return;
+            }
+
+            // Intercept !search command for testing RAG embeddings directly in game
+            if (prompt.StartsWith("!search "))
+            {
+                var query = prompt.Substring(8).Trim();
+                Console.WriteLine($"[Daemon] Testing semantic search for: {query}");
+                var relevant = await _memorySystem.GetRelevantExamplesAsync(query, topK: 3);
+                
+                if (string.IsNullOrWhiteSpace(relevant))
+                {
+                    await _transport.SendChatAsync("Semantic Search: No highly relevant examples found (Score < 0.3)");
+                }
+                else
+                {
+                    // Print the raw context output to the Daemon console so you can inspect the exact code blocks
+                    Console.ForegroundColor = ConsoleColor.Magenta;
+                    Console.WriteLine("\n=== SEMANTIC SEARCH RESULTS ===");
+                    Console.WriteLine(relevant);
+                    Console.WriteLine("===============================\n");
+                    Console.ResetColor();
+
+                    // Send a small summary back to Garry's Mod chat so it doesn't spam the chatbox
+                    var matchCount = relevant.Split("Player Prompt:").Length - 1;
+                    await _transport.SendChatAsync($"Semantic Search: Found {matchCount} highly relevant examples! Check Daemon Console for raw code.");
+                }
+                return;
+            }
+
             Console.WriteLine($"[GMOD CHAT] {player}: {prompt}");
+
+            // Fetch embedded memory dynamically
+            var relevantExamples = await _memorySystem.GetRelevantExamplesAsync(prompt);
 
             // Basic Agent Loop execution
             var messages = new List<ChatMessage>
             {
-                ChatMessage.System("You are an agentic Garry's Mod Addon developer AI. Write clean, efficient Lua code and deploy it using your tools.\n\n" +
-                                   "CRITICAL CONVERSATION RULES:\n" +
-                                   "Keep your conversational replies extremely short and concise (1-2 sentences). Garry's Mod chat space is very limited. Do NOT format your text with markdown headers, bolding, or lists. Just state what you are doing in a single brief sentence.\n\n" +
-                                   "CRITICAL DIRECTORY RULES:\n" +
-                                   "The `write_file`, `read_file`, and `hot_reload` tools automatically start inside your designated addon folder (`garrysmod/addons/AIPlayground_Projects/`).\n" +
-                                   "DO NOT prefix your paths with `AIPlayground_Projects/` or `addons/`. Your paths must start directly with `lua/` or `docs/`.\n\n" +
-                                   "1. You must explicitly talk back to the user to explain what you are doing.\n" +
-                                   "2. When you create or update a Lua file, you must ALWAYS use the `hot_reload` tool to load it into the live server immediately.\n" +
-                                   "3. ISOLATE YOUR PROJECTS: Write ALL your Lua code strictly inside `lua/ai_projects/<project_name>/`. (e.g. YES: `lua/ai_projects/cool_gun/shared.lua` | NO: `AIPlayground_Projects/lua/...` | NO: `addons/lua/...`). Just put all the lua for a single project flat inside its specific `ai_projects/` directory.\n" +
-                                   "4. VISION DOCUMENTS: When you start a new project, you MUST first create a `docs/<project_name>/VISION.md` file using `write_file`.\n" +
-                                   "5. CHECK BEFORE CREATING/EDITING: If the user asks about an existing project or asks you to modify something, YOU MUST USE `list_files(path = \"lua/ai_projects/\")` to find what you've already created, and then YOU MUST USE `read_file` to read the existing code before using `write_file` to edit it! Do NOT guess the code, read it first! If `read_file` fails, you MUST STOP and tell the user, DO NOT try to write a new file from memory.\n" +
-                                   "6. ASSET SEARCH: If you need to use a specific model (`.mdl`), sound (`.wav`), or material (`.vmt`), do NOT guess its path! Use the `search_assets` tool to query the Garry's Mod engine (e.g. `pattern = \"models/weapons/w_*.mdl\", path = \"GAME\"`) to find real file names before you write the Lua code!\n" +
-                                   "7. SWEP REGISTRATION: You MUST use `weapons.Register(SWEP, \"weapon_classname\")` manually at the bottom of your file since you aren't using the standard `/weapons/` auto-load folder! ALWAYS include `SWEP.Category = \"AI Creations\"` and `SWEP.Spawnable = true`!\n" +
-                                   "8. SWEP INITIALIZATION: Because you are defining SWEPs manually, `SWEP.Primary` and `SWEP.Secondary` do not exist by default! You MUST initialize them first (e.g. `SWEP.Primary = {} SWEP.Secondary = {}`) before setting things like `SWEP.Primary.ClipSize` or you will get a nil value error!\n" +
-                                   "9. MENU RELOADS: ALWAYS call the `reload_spawn_menu` tool after you finish writing a completely new weapon, entity, or NPC, so the user doesn't have to restart their game to see the new category in their Q-Menu!\n" +
-                                   "10. PATH FIXING: If an error mentions a bad path, or if `hot_reload` fails, use `list_files` to verify where you accidentally put the file, then use `write_file` to put it in the correct `lua/ai_projects/` folder.\n" +
-                                   "11. MULTI-STEP: Do NOT say what you are going to do and then wait! Execute your plan immediately! You can execute MULTIPLE tools simultaneously in the exact same response! If you need to search multiple paths, fire 3 `search_assets` calls simultaneously in the same response! Never just talk without acting! Do NOT ask for permission to use tools or show the user options! Just pick one and execute it immediately!\n" +
-                                   "12. DO NOT ABUSE FILES AND SWEPS: If the user asks you to simply \"spawn\" something, \"build\" something, or \"make\" something in the world, DO NOT create a permanent file, a SWEP, or a console command! Just immediately use the `run_lua` tool to execute a script that uses `player.GetAll()[1]:GetEyeTrace().HitPos` and `ents.Create()` to spawn the items directly at their crosshair! Do NOT ask what props they want, just spawn a creative combination of them immediately using the assets you found!\n" +
-                                   "13. CLEANUP MISTAKES: If your `run_lua` script creates physical props in the world, but the script throws a missing path error or a Lua error, YOU MUST use `run_lua` to delete the props you just spawned before trying to spawn the corrected ones! Otherwise, the broken props will stay in the world forever! You can use `ents.FindByClass(\"prop_physics\")` and check their model/creation time, or keep track of what you spawned to clean it up!\n\n" +
-                                   "CURRENT GAME STATE:\n" +
-                                   $"{dynamicContext}")
+                ChatMessage.System($"You are an agentic Garry's Mod Addon developer AI. Produce self-contained GMod Lua code for player tasks. Default GMod API only.\n\n" +
+                                   $"## Available Shared Addons (always loaded — use these, do not reimplement)\n" +
+                                   $"### GilbUtils\n" +
+                                   $"- `GilbUtils.Gibs.Explode(ent, dmg)` — explode any entity into HL1-accurate gibs. Handles overkill scaling, head gib, blood decals, bodysplat sound. Optional 3rd arg: `{{ model=..., count=4, headGib=true }}`\n" +
+                                   $"- `GilbUtils.Gibs.SpawnGib(model, bodygroup, pos, vel, bloodColor)` — spawn a single `hl1_hgib` at pos with the given velocity. Returns the gib; set `.GibVelocity` and `.AngVelocity` after spawn.\n" +
+                                   $"- `hl1_hgib` and `hl1_debris_gib` scripted entities are registered and available — do NOT redefine them.\n" +
+                                   $"- All gib spawning is SERVER only.\n\n" +
+                                   $"## Realms\n" +
+                                   $"- **Default: SERVER** (entities, hooks, physics, health, gravity)\n" +
+                                   $"- `RunClientLua(code)` — client only (UI, effects, sounds, dynamic lights)\n" +
+                                   $"- `RunSharedLua(code)` — both realms (use `if SERVER then` / `if CLIENT then` inside)\n\n" +
+                                   $"## Lua Pitfalls\n" +
+                                   $"- Delay: `timer.Simple(n, fn)` (NOT setTimeout)\n" +
+                                   $"- Entity creation: SERVER only\n" +
+                                   $"- Net messages: `util.AddNetworkString` on server first\n" +
+                                   $"- No `continue` keyword — use `if not cond then`\n" +
+                                   $"- `true`/`false` lowercase; `NULL` = entity check, `nil` = Lua null\n" +
+                                   $"- No `SetDrawBackground`\n" +
+                                   $"- `CLuaEmitter`: check `:IsValid()` before use; create with `ParticleEmitter(pos, use3D)`\n" +
+                                   $"- `npc_grenade_frag` needs `ent:Fire(\"SetTimer\", seconds)` or it won't explode\n" +
+                                   $"- Hard 8192 entity limit — batch spawns, use `SafeRemoveEntityDelayed(ent, seconds)`\n" +
+                                   $"- SWEP projectiles: offset spawn pos so they don't clip the player\n" +
+                                   $"- `DynamicLight` is CLIENT only\n\n" +
+                                   $"## Positioning\n" +
+                                   $"Always position relative to the requesting player (eye trace `HitPos`, `GetPos`, `GetForward`, etc.).\n\n" +
+                                   $"## Multi-File Addon Projects\n" +
+                                   $"If the user explicitly asks you to create a permanent addon, swep, or project, use `write_file` to save it to your virtual root (e.g. `my_cool_addon/lua/weapons/weapon_cool.lua`). Do NOT use files for simple temporary requests.\n\n" +
+                                   $"## Response Format (One-Shot Lua)\n" +
+                                   $"If you just need to spawn something or execute a command, simply write your raw Lua code inside a Markdown ```lua code block. Do NOT use any tools. The system will automatically extract and execute it on the server immediately!\n" +
+                                   $"Exactly ONE fenced ```lua block. No text outside it. Begin with:\n" +
+                                   $"-- PLAN: realm, approach, cleanup\n\n" +
+                                   $"## Game State\n" +
+                                   $"{dynamicContext}\n\n" +
+                                   (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
             };
 
-            // Inject previous conversation history BEFORE adding the new message
-            messages.AddRange(_chatHistory);
+            // Inject previous conversation history BEFORE adding the new message (if enabled)
+            if (_useHistory)
+            {
+                messages.AddRange(_chatHistory);
+            }
 
             // Add the new user prompt
             var userMsg = ChatMessage.User($"[From {player}]: {prompt}");
@@ -228,7 +288,22 @@ public sealed class GModFileBridge
                 // Normal chat is buffered completely until the stream is done
                 if (contentBuffer.Length > 0)
                 {
-                    await _transport.SendChatAsync(contentBuffer);
+                    // Check if the AI wrote a raw Lua code block instead of using a tool
+                    var luaMatch = System.Text.RegularExpressions.Regex.Match(contentBuffer, @"```lua\s*(.*?)\s*```", System.Text.RegularExpressions.RegexOptions.Singleline);
+                    if (luaMatch.Success)
+                    {
+                        string codeToRun = luaMatch.Groups[1].Value.Trim();
+                        Console.WriteLine($"[Daemon] Detected raw Lua block in conversational output. Queuing for execution!");
+                        _pendingLuaExecution.Enqueue(codeToRun);
+                        
+                        // Send just the conversational text to chat without the giant code block
+                        string chatOnly = System.Text.RegularExpressions.Regex.Replace(contentBuffer, @"```lua\s*(.*?)\s*```", "[Executing Lua...]", System.Text.RegularExpressions.RegexOptions.Singleline);
+                        await _transport.SendChatAsync(chatOnly);
+                    }
+                    else
+                    {
+                        await _transport.SendChatAsync(contentBuffer);
+                    }
                 }
 
                 Console.WriteLine(); // Newline after stream finishes
@@ -246,6 +321,19 @@ public sealed class GModFileBridge
                     {
                         _chatHistory.Add(msg);
                     }
+
+                    // Flush any pending Lua execution that was queued from regex parsing of the final conversational stream block
+                    if (_pendingLuaExecution.Count > 0)
+                    {
+                        var immediateScripts = new List<string>();
+                        while (_pendingLuaExecution.TryDequeue(out var s)) immediateScripts.Add(s);
+
+                        foreach (var s in immediateScripts)
+                        {
+                            await _transport.RunLuaAsync(s);
+                        }
+                    }
+
                     break;
                 }
 

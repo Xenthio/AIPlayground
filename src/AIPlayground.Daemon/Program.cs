@@ -66,8 +66,21 @@ public static class Program
 
         var openRouterBackend = new OpenRouterBackend(apiKey);
 
+        // Preload memory retrieval system
+        var memoryPath = Path.Combine(gmodBasePath, "garrysmod", "data", "aiplayground", "examples.json");
+        var aiChaosDir = Path.Combine(gmodBasePath, "garrysmod", "addons", "disable", "AIChaos", "AIChaos.Brain", "BuiltInFavourites");
+        var gilbAiDir = @"D:\gilbai\examples";
+        
+        // Ensure aiplayground directory exists
+        var aiplaygroundDir = Path.GetDirectoryName(memoryPath);
+        if (aiplaygroundDir != null && !Directory.Exists(aiplaygroundDir))
+            Directory.CreateDirectory(aiplaygroundDir);
+
+        var memorySystem = new MemoryRetrievalSystem(openRouterBackend, gilbAiDir);
+        await memorySystem.InitializeAsync();
+
         var wsTransport = new WebSocketTransport(27016);
-        var server = new GModFileBridge(gmodBasePath, addonWorkspace, openRouterBackend, wsTransport);
+        var server = new AgentOrchestrator(gmodBasePath, addonWorkspace, openRouterBackend, wsTransport, memorySystem);
 
         try
         {

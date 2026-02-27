@@ -17,7 +17,7 @@ public sealed class ListFilesTool : ITool
     }
 
     public string Name => "list_files";
-    public string Description => "List all files and folders currently in the AIPlayground_Projects directory. Use this to see what projects you've already created before deciding to make a new one!";
+    public string Description => "List all files and folders currently in your virtual addons root directory. Use this to see what projects you've already created before deciding to make a new one!";
 
     public object Parameters => JsonNode.Parse("""
     {
@@ -25,7 +25,7 @@ public sealed class ListFilesTool : ITool
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Optional subdirectory to list (e.g. lua/ai_projects/). Defaults to root."
+                "description": "Optional subdirectory to list (e.g. my_cool_addon/lua/weapons/). Defaults to root."
             }
         }
     }
@@ -41,6 +41,17 @@ public sealed class ListFilesTool : ITool
                 relativePath = pathElement.GetString() ?? "";
             }
 
+            // If the AI asks to list a specific addon, make sure we append the ~ prefix so it looks in the right real folder
+            if (!string.IsNullOrWhiteSpace(relativePath))
+            {
+                var parts = relativePath.Split('/', '\\');
+                if (parts.Length > 0 && !parts[0].StartsWith("~"))
+                {
+                    parts[0] = "~" + parts[0];
+                    relativePath = string.Join(Path.DirectorySeparatorChar, parts);
+                }
+            }
+
             var fullPath = Path.GetFullPath(Path.Combine(_workspacePath, relativePath));
             
             if (!fullPath.StartsWith(_workspacePath))
@@ -52,11 +63,39 @@ public sealed class ListFilesTool : ITool
             var entries = new List<string>();
             foreach (var d in Directory.GetDirectories(fullPath))
             {
-                entries.Add($"[DIR]  {Path.GetRelativePath(_workspacePath, d).Replace('\\', '/')}/");
+                var relativeName = Path.GetRelativePath(_workspacePath, d).Replace('\\', '/');
+                
+                // If we are listing the root, ONLY return folders that start with ~, but hide the ~ from the AI
+                if (string.IsNullOrWhiteSpace(relativePath))
+                {
+                    var folderName = Path.GetFileName(d);
+                    if (!folderName.StartsWith("~"))
+                        continue;
+                    
+                    relativeName = folderName.Substring(1) + "/";
+                }
+                // If we are deep in a folder, just return it but strip the root ~ so the AI doesn't get confused
+                else
+                {
+                    var parts = relativeName.Split('/');
+                    if (parts.Length > 0 && parts[0].StartsWith("~"))
+                        parts[0] = parts[0].Substring(1);
+                    relativeName = string.Join("/", parts) + "/";
+                }
+                
+                entries.Add($"[DIR]  {relativeName}");
             }
             foreach (var f in Directory.GetFiles(fullPath))
             {
-                entries.Add($"[FILE] {Path.GetRelativePath(_workspacePath, f).Replace('\\', '/')}");
+                var relativeName = Path.GetRelativePath(_workspacePath, f).Replace('\\', '/');
+                
+                // Strip the ~ from the root folder name in the output so the AI stays blissfully unaware
+                var parts = relativeName.Split('/');
+                if (parts.Length > 0 && parts[0].StartsWith("~"))
+                    parts[0] = parts[0].Substring(1);
+                relativeName = string.Join("/", parts);
+
+                entries.Add($"[FILE] {relativeName}");
             }
 
             if (entries.Count == 0)
