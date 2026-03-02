@@ -93,5 +93,18 @@ hook.Add("OnPlayerChat", "AIPlayground_Command", function(ply, text)
             SendToDaemon(prompt)
             return true
         end
+
+        -- Router command
+        if string.StartWith(lowerText, "!router ") then
+            local arg = string.Trim(string.sub(text, 9))
+            local prompt = "!router " .. arg
+            if string.lower(arg) == "off" then
+                chat.AddText(Color(255, 150, 0), "[AI System] ", Color(255, 255, 255), "Disabling prompt router...")
+            else
+                chat.AddText(Color(255, 150, 0), "[AI System] ", Color(255, 255, 255), "Enabling prompt router with model: " .. arg)
+            end
+            SendToDaemon(prompt)
+            return true
+        end
     end
 end)

@@ -96,12 +96,13 @@ public class WebSocketTransport : IGModTransport
                         var payload = JsonNode.Parse(payloadStr);
                         var prompt = payload?["prompt"]?.ToString() ?? "";
                         var player = payload?["player"]?.ToString() ?? "Unknown";
+                        var userId = (int)(payload?["userId"]?.GetValue<int>() ?? 1);
                         var dynamicContext = payload?["context"]?.ToString() ?? "";
 
-                        // Fire the event on the main thread loop
                         OnPromptReceived?.Invoke(this, new IncomingPromptEventArgs 
                         { 
-                            Player = player, 
+                            Player = player,
+                            UserId = userId,
                             Prompt = prompt,
                             DynamicContext = dynamicContext
                         });

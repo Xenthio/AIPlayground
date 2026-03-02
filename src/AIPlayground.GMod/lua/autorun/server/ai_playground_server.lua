@@ -75,14 +75,11 @@ local function ConnectToDaemon()
             
             if isThought then
                 text = string.sub(text, 11) -- Remove "<thought> "
-                
-                -- Split long thoughts into multiple lines if needed
+                -- Thoughts print to server console only, not chat
                 local lines = string.Explode("\n", text)
                 for _, line in ipairs(lines) do
                     if line and string.Trim(line) ~= "" then
-                        net.Start("AIPlayground_ClientChat")
-                        net.WriteTable({Color(150, 150, 150), "[AI Thought] ", Color(200, 200, 200), string.Trim(line)})
-                        net.Broadcast()
+                        print("[AI Thought] " .. string.Trim(line))
                     end
                 end
             elseif res.is_model_switch then
@@ -207,12 +204,16 @@ function AskDaemonServer(promptText, playerName)
     -- Build dynamic context string
     local plys = player.GetAll()
     local plyNames = {}
+    local requestingUserId = 1
     for _, p in ipairs(plys) do
         local tr = p:GetEyeTrace()
         local lookPos = string.format("Looking at: Vector(%d, %d, %d)", math.Round(tr.HitPos.x), math.Round(tr.HitPos.y), math.Round(tr.HitPos.z))
         local plyPos = string.format("Position: Vector(%d, %d, %d)", math.Round(p:GetPos().x), math.Round(p:GetPos().y), math.Round(p:GetPos().z))
         
-        table.insert(plyNames, p:Nick() .. " (ID: " .. p:EntIndex() .. ", " .. plyPos .. ", " .. lookPos .. ")")
+        table.insert(plyNames, string.format("%s (UserID: %d, %s, %s)", p:Nick(), p:UserID(), plyPos, lookPos))
+        if p:Nick() == playerName then
+            requestingUserId = p:UserID()
+        end
     end
     
     local dynCtx = string.format("Map: %s\nPlayers Online: %d\nPlayer Data:\n- %s", game.GetMap(), #plys, table.concat(plyNames, "\n- "))
@@ -220,6 +221,7 @@ function AskDaemonServer(promptText, playerName)
     local payload = util.TableToJSON({
         prompt = promptText,
         player = playerName,
+        userId = requestingUserId,
         context = dynCtx
     })
 

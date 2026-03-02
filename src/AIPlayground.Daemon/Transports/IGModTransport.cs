@@ -3,6 +3,7 @@ namespace AIPlayground.Daemon.Transports;
 public class IncomingPromptEventArgs : EventArgs
 {
     public string Player { get; set; } = string.Empty;
+    public int UserId { get; set; } = 1;
     public string Prompt { get; set; } = string.Empty;
     public string DynamicContext { get; set; } = string.Empty;
 }

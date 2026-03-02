@@ -16,7 +16,15 @@ public sealed class AgentOrchestrator
     private readonly IBackendProvider _backend;
     private readonly List<ITool> _tools;
     private string _currentModel = "google/gemini-3-flash-preview";
-    private bool _useHistory = true;
+    private bool _useHistory = false;
+
+    // Prompt router: if set, use this model to classify prompt complexity before sending to main model
+    private string? _routerModel = null;
+
+    // Project tools (write_file, read_file, etc.) — disabled by default, toggle with !projects on/off
+    private bool _projectsEnabled = false;
+
+    private readonly SessionLogger _logger;
 
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingLuaExecution = new();
 
@@ -43,6 +51,7 @@ public sealed class AgentOrchestrator
         // Setup data directory inside Garry's Mod for communication
         _dataPath = Path.Combine(gmodBasePath, "garrysmod", "data", "aiplayground");
         Directory.CreateDirectory(_dataPath);
+        _logger = new SessionLogger(Path.Combine(_dataPath, "logs"));
 
         // Delete legacy file bridge artifacts
         var legacyInbox = Path.Combine(_dataPath, "inbox.json");
@@ -62,6 +71,14 @@ public sealed class AgentOrchestrator
         };
     }
 
+    private static readonly HashSet<string> _projectToolNames = new()
+    {
+        "write_file", "read_file", "hot_reload_file", "list_files", "file_search", "reload_spawn_menu", "record_example"
+    };
+
+    private IEnumerable<ITool> GetActiveTools() =>
+        _projectsEnabled ? _tools : _tools.Where(t => !_projectToolNames.Contains(t.Name));
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         Console.WriteLine($"[AgentPlaygroundRunner] Connecting Transport to Garry's Mod...");
@@ -69,13 +86,13 @@ public sealed class AgentOrchestrator
     }
 
     private bool _isProcessing = false;
-    private readonly Queue<(string Player, string Prompt, string DynamicContext)> _promptQueue = new();
+    private readonly Queue<(string Player, int UserId, string Prompt, string DynamicContext)> _promptQueue = new();
 
     private void OnPromptReceived(object? sender, IncomingPromptEventArgs e)
     {
         lock (_promptQueue)
         {
-            _promptQueue.Enqueue((e.Player, e.Prompt, e.DynamicContext));
+            _promptQueue.Enqueue((e.Player, e.UserId, e.Prompt, e.DynamicContext));
             if (!_isProcessing)
             {
                 _isProcessing = true;
@@ -88,7 +105,7 @@ public sealed class AgentOrchestrator
     {
         while (true)
         {
-            (string Player, string Prompt, string DynamicContext) item;
+            (string Player, int UserId, string Prompt, string DynamicContext) item;
             lock (_promptQueue)
             {
                 if (_promptQueue.Count == 0)
@@ -99,11 +116,11 @@ public sealed class AgentOrchestrator
                 item = _promptQueue.Dequeue();
             }
 
-            await ProcessRequestAsync(item.Player, item.Prompt, item.DynamicContext);
+            await ProcessRequestAsync(item.Player, item.UserId, item.Prompt, item.DynamicContext);
         }
     }
 
-    private async Task ProcessRequestAsync(string player, string prompt, string dynamicContext)
+    private async Task ProcessRequestAsync(string player, int userId, string prompt, string dynamicContext)
     {
         try
         {
@@ -113,6 +130,25 @@ public sealed class AgentOrchestrator
                 _currentModel = prompt.Substring(7).Trim();
                 Console.WriteLine($"[Daemon] Model switched to {_currentModel}");
                 await _transport.SendChatAsync($"Switched backend model to {_currentModel}");
+                return;
+            }
+
+            // Intercept !router commands
+            if (prompt.StartsWith("!router "))
+            {
+                var arg = prompt.Substring(8).Trim();
+                if (arg.Equals("off", StringComparison.OrdinalIgnoreCase))
+                {
+                    _routerModel = null;
+                    Console.WriteLine("[Daemon] Prompt router disabled.");
+                    await _transport.SendChatAsync("Prompt router disabled.");
+                }
+                else
+                {
+                    _routerModel = arg;
+                    Console.WriteLine($"[Daemon] Prompt router enabled with model: {_routerModel}");
+                    await _transport.SendChatAsync($"Prompt router enabled: {_routerModel}");
+                }
                 return;
             }
 
@@ -133,6 +169,16 @@ public sealed class AgentOrchestrator
                     Console.WriteLine($"[Daemon] Chat history tracking enabled.");
                     await _transport.SendChatAsync("Chat history enabled.");
                 }
+                return;
+            }
+
+            // Intercept !projects toggle
+            if (prompt.StartsWith("!projects "))
+            {
+                var arg = prompt.Substring(10).Trim().ToLower();
+                _projectsEnabled = arg == "on" || arg == "true";
+                Console.WriteLine($"[Daemon] Project tools {(_projectsEnabled ? "enabled" : "disabled")}.");
+                await _transport.SendChatAsync($"Project tools {(_projectsEnabled ? "enabled" : "disabled")}.");
                 return;
             }
 
@@ -165,8 +211,22 @@ public sealed class AgentOrchestrator
 
             Console.WriteLine($"[GMOD CHAT] {player}: {prompt}");
 
-            // Fetch embedded memory dynamically
+            // Route to cheaper model for simple prompts if router is enabled
+            string modelForThisTurn = _currentModel;
+            if (_routerModel != null)
+            {
+                bool isComplex = await ClassifyPromptAsync(prompt);
+                modelForThisTurn = isComplex ? _currentModel : "openai/gpt-oss-120b";
+                Console.WriteLine($"[Router] {(isComplex ? "COMPLEX" : "SIMPLE")} → {modelForThisTurn}");
+            }
+
+            // Fetch embedded memory dynamically, substitute {{ID}} with requesting player's UserID
             var relevantExamples = await _memorySystem.GetRelevantExamplesAsync(prompt);
+            if (!string.IsNullOrWhiteSpace(relevantExamples))
+                relevantExamples = relevantExamples.Replace("{{ID}}", userId.ToString());
+
+            // Session log entry — accumulates data across all turns for this prompt
+            var logEntry = new SessionLogger.Entry { Prompt = prompt };
 
             // Basic Agent Loop execution
             var messages = new List<ChatMessage>
@@ -195,13 +255,15 @@ public sealed class AgentOrchestrator
                                    $"- SWEP projectiles: offset spawn pos so they don't clip the player\n" +
                                    $"- `DynamicLight` is CLIENT only\n\n" +
                                    $"## Positioning\n" +
-                                   $"Always position relative to the requesting player (eye trace `HitPos`, `GetPos`, `GetForward`, etc.).\n\n" +
-                                   $"## Multi-File Addon Projects\n" +
-                                   $"If the user explicitly asks you to create a permanent addon, swep, or project, use `write_file` to save it to your virtual root (e.g. `my_cool_addon/lua/weapons/weapon_cool.lua`). Do NOT use files for simple temporary requests.\n\n" +
+                                   $"Always position relative to the requesting player. Use `Player({userId})` to get the requesting player (their UserID is already substituted). `ply:ChatPrint(text)` is valid for sending chat messages to a player.\n\n" +
+                                   (_projectsEnabled ? $"## Multi-File Addon Projects\n" +
+                                   $"If the user explicitly asks you to create a permanent addon, swep, or project, use `write_file` to save it to your virtual root (e.g. `my_cool_addon/lua/weapons/weapon_cool.lua`). Do NOT use files for simple temporary requests.\n\n" : "") +
                                    $"## Response Format (One-Shot Lua)\n" +
                                    $"If you just need to spawn something or execute a command, simply write your raw Lua code inside a Markdown ```lua code block. Do NOT use any tools. The system will automatically extract and execute it on the server immediately!\n" +
                                    $"Exactly ONE fenced ```lua block. No text outside it. Begin with:\n" +
-                                   $"-- PLAN: realm, approach, cleanup\n\n" +
+                                   $"-- PLAN: realm, approach, cleanup\n" +
+                                   $"End with:\n" +
+                                   $"Player({userId}):ChatPrint(\"feedback message\")\n\n" +
                                    $"## Game State\n" +
                                    $"{dynamicContext}\n\n" +
                                    (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
@@ -227,9 +289,9 @@ public sealed class AgentOrchestrator
             {
                 var completionReq = new CompletionRequest
                 {
-                    Model = _currentModel,
+                    Model = modelForThisTurn,
                     Messages = messages,
-                    Tools = _tools.Select(t => t.GetDefinition()).ToList(),
+                    Tools = GetActiveTools().Select(t => t.GetDefinition()).ToList(),
                     Temperature = 0.7
                 };
 
@@ -294,6 +356,7 @@ public sealed class AgentOrchestrator
                     {
                         string codeToRun = luaMatch.Groups[1].Value.Trim();
                         Console.WriteLine($"[Daemon] Detected raw Lua block in conversational output. Queuing for execution!");
+                        logEntry.ExecutedLua.Add(codeToRun);
                         _pendingLuaExecution.Enqueue(codeToRun);
                         
                         // Send just the conversational text to chat without the giant code block
@@ -321,6 +384,10 @@ public sealed class AgentOrchestrator
                     {
                         _chatHistory.Add(msg);
                     }
+
+                    // Write session log entry
+                    logEntry.Response = finalResponseText;
+                    _logger.Write(logEntry);
 
                     // Flush any pending Lua execution that was queued from regex parsing of the final conversational stream block
                     if (_pendingLuaExecution.Count > 0)
@@ -353,7 +420,7 @@ public sealed class AgentOrchestrator
                     Console.WriteLine($"\n[TOOL CALL] {tc.Function.Name}({tc.Function.Arguments})");
                     Console.ResetColor();
 
-                    var tool = _tools.FirstOrDefault(t => t.Name == tc.Function.Name);
+                    var tool = GetActiveTools().FirstOrDefault(t => t.Name == tc.Function.Name);
                     if (tool != null)
                     {
                         try
@@ -375,6 +442,12 @@ public sealed class AgentOrchestrator
                             }
 
                             var result = await resultTask;
+
+                            logEntry.ToolCalls.Add(new SessionLogger.ToolCallEntry(
+                                tc.Function.Name,
+                                tc.Function.Arguments,
+                                result.Content + (result.Error != null ? $"\nError: {result.Error}" : "")
+                            ));
 
                             if (result.Success)
                             {
@@ -428,6 +501,60 @@ public sealed class AgentOrchestrator
         {
             Console.WriteLine($"[Daemon Error] {ex}");
             await _transport.SendChatAsync($"Daemon Error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Classify whether a prompt is "complex" (true) or "simple" (false).
+    /// Complex = needs the main model. Simple = a cheap fast model is fine.
+    /// </summary>
+    private async Task<bool> ClassifyPromptAsync(string prompt)
+    {
+        try
+        {
+            var req = new CompletionRequest
+            {
+                Model = _routerModel!,
+                Messages = new List<ChatMessage>
+                {
+                    ChatMessage.System(
+                        "Classify the complexity of a Garry's Mod AI request. Reply with ONE word only: SIMPLE or COMPLEX. No explanation.\n\n" +
+                        "SIMPLE (cheap model fine):\n" +
+                        "- Spawn a single prop or effect\n" +
+                        "- Set a player stat (health, speed, gravity)\n" +
+                        "- Play a sound or basic particle\n" +
+                        "- Single short hook or timer\n\n" +
+                        "COMPLEX (needs capable model):\n" +
+                        "- Any SWEP or weapon\n" +
+                        "- Any scripted entity (SENT)\n" +
+                        "- Any HUD or UI element\n" +
+                        "- Physics systems or movement mechanics\n" +
+                        "- Multi-step or multi-file tasks\n" +
+                        "- Error debugging or fixing\n" +
+                        "- Anything with hooks, net messages, or custom logic\n" +
+                        "- When in doubt: COMPLEX"),
+                    ChatMessage.User(prompt)
+                },
+                Temperature = 0,
+                MaxTokens = 4
+            };
+
+            var result = await _backend.GenerateCompletionAsync(req);
+            var answer = result.Content?.Trim().ToUpperInvariant() ?? "";
+
+            // Only route cheap if explicitly SIMPLE with no COMPLEX anywhere in the response
+            bool isSimple = answer.Contains("SIMPLE") && !answer.Contains("COMPLEX");
+
+            Console.ForegroundColor = ConsoleColor.DarkCyan;
+            Console.WriteLine($"[Router] '{prompt.Substring(0, Math.Min(50, prompt.Length))}' => \"{result.Content?.Trim()}\" => {(isSimple ? "SIMPLE" : "COMPLEX")}");
+            Console.ResetColor();
+
+            return !isSimple; // true = COMPLEX = use main model
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Router] Classification failed ({ex.Message}), defaulting to main model.");
+            return true; // Fail safe: always use main model on error
         }
     }
 }
