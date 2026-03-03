@@ -284,9 +284,10 @@ public sealed class AgentOrchestrator
                                    $"- Use `render.SetScissorRect()` for clipped UI regions; remember to call with all zeros to disable.\n" +
                                    $"\n" +
                                    $"## HUD Color Globals\n" +
-                                   $"- `HL2HudColors` (global Color table) is exposed by the `hl2_health_hud` example. Fields: Yellow, Red, Bg, PulseBg.\n" +
-                                   $"  If `HL2HudColors ~= nil` on the client, the HL2 HUD replacement is active — update its fields directly to recolor live.\n" +
-                                   $"  If it is nil, run `hl2_health_hud` first (via `!run`), then update the colors.\n" +
+                                   $"- `HL2Hud` (global table) is ALWAYS available on clients — GilbUtils auto-loads the HL2 HUD replacement (`cl_hl2_hud.lua`).\n" +
+                                   $"- `HL2Hud.Colors` fields: FgColor, BrightFg, DamagedFg, BrightDamagedFg, BgColor, DamagedBg, AuxHigh, AuxLow, AuxDisabled (alpha number).\n" +
+                                   $"- To recolor: update `HL2Hud.Colors.*` fields directly inside `RunClientLua`. Changes take effect immediately — no reload needed.\n" +
+                                   $"- `HL2Hud.healthEvent(name)` / `HL2Hud.suitEvent(name)` / `HL2Hud.auxEvent(name)` — fire animation events manually if needed.\n" +
                                    $"\n" +
                                    $"## Positioning\n" +
                                    $"Always position relative to the requesting player. Use `Player({userId})` to get the requesting player (their UserID is already substituted). `ply:ChatPrint(text)` is valid for sending chat messages to a player.\n\n" +
