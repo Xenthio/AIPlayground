@@ -182,6 +182,30 @@ public sealed class AgentOrchestrator
                 return;
             }
 
+            // Intercept !run command: run a named example directly
+            if (prompt.StartsWith("!run "))
+            {
+                var exampleName = prompt.Substring(5).Trim();
+                var examplePath = Path.Combine(@"D:\gilbai\examples", exampleName, "response.lua");
+                if (File.Exists(examplePath))
+                {
+                    var code = File.ReadAllText(examplePath);
+                    // Substitute {{ID}} with the requesting player's userId
+                    code = code.Replace("{{ID}}", userId.ToString());
+                    Console.WriteLine($"[Daemon] Running example: {exampleName}");
+                    await _transport.SendChatAsync($"[AI System] Running example: {exampleName}");
+                    await _transport.RunLuaAsync(code);
+                }
+                else
+                {
+                    // List available examples
+                    var examplesRoot = @"D:\gilbai\examples";
+                    var dirs = Directory.Exists(examplesRoot) ? Directory.GetDirectories(examplesRoot).Select(Path.GetFileName) : [];
+                    await _transport.SendChatAsync($"[AI System] Example '{exampleName}' not found. Available: {string.Join(", ", dirs)}");
+                }
+                return;
+            }
+
             // Intercept !search command for testing RAG embeddings directly in game
             if (prompt.StartsWith("!search "))
             {

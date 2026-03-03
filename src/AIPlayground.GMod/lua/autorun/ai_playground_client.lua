@@ -79,6 +79,13 @@ hook.Add("OnPlayerChat", "AIPlayground_Command", function(ply, text)
         end
 
         -- Embedding search command
+        if string.StartWith(lowerText, "!run ") then
+            local example = string.Trim(string.sub(text, 6))
+            chat.AddText(Color(100, 200, 255), "[AI System] ", Color(255, 255, 255), "Running example: " .. example)
+            SendToDaemon("!run " .. example)
+            return true
+        end
+
         if string.StartWith(lowerText, "!search ") then
             local prompt = "!search " .. string.Trim(string.sub(text, 9))
             chat.AddText(Color(200, 100, 255), "[AI System] ", Color(255, 255, 255), "Testing semantic embedding search for: " .. string.sub(text, 9))
