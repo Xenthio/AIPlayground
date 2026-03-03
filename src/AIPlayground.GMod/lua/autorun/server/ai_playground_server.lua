@@ -87,12 +87,91 @@ local function ConnectToDaemon()
                 net.WriteTable({Color(255, 150, 0), "[AI System] ", Color(255, 255, 255), text})
                 net.Broadcast()
             else
-                local lines = string.Explode("\n", text)
+                -- Extract and run any ```lua blocks; print remaining text to chat
+                local luaBlocks = {}
+                local stripped = string.gsub(text, "```[lL][uU][aA]%s*\n?(.-)\n?```", function(code)
+                    table.insert(luaBlocks, code)
+                    return ""   -- remove block from chat text
+                end)
+
+                -- Print non-code text lines
+                local printedAny = false
+                local lines = string.Explode("\n", stripped)
                 for _, line in ipairs(lines) do
-                    if line and string.Trim(line) ~= "" then
+                    line = string.Trim(line)
+                    if line ~= "" then
                         net.Start("AIPlayground_ClientChat")
-                        net.WriteTable({Color(100, 255, 100), "[AI] ", Color(255, 255, 255), string.Trim(line)})
+                        net.WriteTable({Color(100, 255, 100), "[AI] ", Color(255, 255, 255), line})
                         net.Broadcast()
+                        printedAny = true
+                    end
+                end
+
+                -- Execute extracted Lua blocks
+                for _, code in ipairs(luaBlocks) do
+                    print("[AIPlayground] Running inline Lua from response...")
+                    local scriptId = "AI_Inline_" .. tostring(os.time())
+                    local safeCode = string.gsub(code, "AddCSLuaFile%(.-%)", "-- AddCSLuaFile omitted for hotreload")
+
+                    local env = setmetatable({
+                        RunClientLua = function(c)
+                            net.Start("AIPlayground_RunLuaClient")
+                            net.WriteString(c)
+                            net.Broadcast()
+                        end,
+                        RunSharedLua = function(c)
+                            local sf = CompileString(c, scriptId .. "_Shared", false)
+                            if isstring(sf) then
+                                print("[AIPlayground] Shared Lua Syntax Error: " .. sf)
+                                AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sf .. "\n\nPlease fix and try again.")
+                            else
+                                local s, e = pcall(sf)
+                                if not s then
+                                    print("[AIPlayground] Shared Lua Runtime Error: " .. tostring(e))
+                                    AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nPlease fix and try again.")
+                                end
+                            end
+                            net.Start("AIPlayground_RunLuaClient")
+                            net.WriteString(c)
+                            net.Broadcast()
+                        end,
+                    }, { __index = _G })
+
+                    local func = CompileString(safeCode, scriptId, false)
+                    if isstring(func) then
+                        print("[AIPlayground] Inline Lua Syntax Error: " .. func)
+                        AskDaemonServer("You got a Server Lua Syntax Error:\n" .. func .. "\n\nPlease fix and try again.")
+                    else
+                        setfenv(func, env)
+                        local ok, err = pcall(func)
+                        if not ok then
+                            print("[AIPlayground] Inline Lua Runtime Error: " .. tostring(err))
+                            AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nPlease fix and try again.")
+                        else
+                            print("[AIPlayground] Inline Lua executed successfully.")
+                            -- Missing path check
+                            local missingPaths = {}
+                            for path in string.gmatch(code, "[\"']([^\"']+)[\"']") do
+                                if not string.find(path, "%*") and (string.StartWith(path, "models/") or string.StartWith(path, "sound/") or string.StartWith(path, "materials/")) then
+                                    if string.find(path, "%.mdl$") or string.find(path, "%.wav$") or string.find(path, "%.vmt$") or string.find(path, "%.mp3$") then
+                                        if not file.Exists(path, "GAME") then
+                                            table.insert(missingPaths, path)
+                                        end
+                                    end
+                                end
+                            end
+                            if #missingPaths > 0 then
+                                local seen, unique = {}, {}
+                                for _, p in ipairs(missingPaths) do
+                                    if not seen[p] then seen[p] = true table.insert(unique, p) end
+                                end
+                                AskDaemonServer("Your script executed but referenced missing paths: " .. table.concat(unique, ", ") .. "\n\nPlease search_assets for valid replacements and clean up any broken props.")
+                            end
+                            net.Start("AIPlayground_RunLuaClient")
+                            net.WriteString(safeCode)
+                            net.WriteString(scriptId)
+                            net.Broadcast()
+                        end
                     end
                 end
             end
