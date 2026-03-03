@@ -281,7 +281,13 @@ public sealed class AgentOrchestrator
                                    $"## Client-Side Hooks (CLIENT realm only)\n" +
                                    $"- `EntityTakeDamage` does NOT fire on the client. For client-side damage detection, check `LocalPlayer():Health()` deltas in `HUDPaint` or a `Think` hook.\n" +
                                    $"- `OnEntityCreated` fires on client, but entities may not have all properties set yet.\n" +
-                                   $"- Use `render.SetScissorRect()` for clipped UI regions; remember to call with all zeros to disable.\n\n" +
+                                   $"- Use `render.SetScissorRect()` for clipped UI regions; remember to call with all zeros to disable.\n" +
+                                   $"\n" +
+                                   $"## HUD Color Globals\n" +
+                                   $"- `HL2HudColors` (global Color table) is exposed by the `hl2_health_hud` example. Fields: Yellow, Red, Bg, PulseBg.\n" +
+                                   $"  If `HL2HudColors ~= nil` on the client, the HL2 HUD replacement is active — update its fields directly to recolor live.\n" +
+                                   $"  If it is nil, run `hl2_health_hud` first (via `!run`), then update the colors.\n" +
+                                   $"\n" +
                                    $"## Positioning\n" +
                                    $"Always position relative to the requesting player. Use `Player({userId})` to get the requesting player (their UserID is already substituted). `ply:ChatPrint(text)` is valid for sending chat messages to a player.\n\n" +
                                    (_projectsEnabled ? $"## Multi-File Addon Projects\n" +
