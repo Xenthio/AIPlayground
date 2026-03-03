@@ -355,13 +355,21 @@ public sealed class AgentOrchestrator
                     if (luaMatch.Success)
                     {
                         string codeToRun = luaMatch.Groups[1].Value.Trim();
-                        Console.WriteLine($"[Daemon] Detected raw Lua block in conversational output. Queuing for execution!");
+                        Console.WriteLine($"[Daemon] Detected fenced Lua block. Queuing for execution!");
                         logEntry.ExecutedLua.Add(codeToRun);
                         _pendingLuaExecution.Enqueue(codeToRun);
                         
                         // Send just the conversational text to chat without the giant code block
                         string chatOnly = System.Text.RegularExpressions.Regex.Replace(contentBuffer, @"```lua\s*(.*?)\s*```", "[Executing Lua...]", System.Text.RegularExpressions.RegexOptions.Singleline);
                         await _transport.SendChatAsync(chatOnly);
+                    }
+                    else if (LooksLikeLua(contentBuffer))
+                    {
+                        // AI returned raw Lua without a code fence — detect and run it
+                        Console.WriteLine($"[Daemon] Detected unfenced Lua response. Queuing for execution!");
+                        logEntry.ExecutedLua.Add(contentBuffer);
+                        _pendingLuaExecution.Enqueue(contentBuffer);
+                        await _transport.SendChatAsync("[Executing Lua...]");
                     }
                     else
                     {
@@ -508,6 +516,40 @@ public sealed class AgentOrchestrator
     /// Classify whether a prompt is "complex" (true) or "simple" (false).
     /// Complex = needs the main model. Simple = a cheap fast model is fine.
     /// </summary>
+    /// <summary>
+    /// Heuristic: does this response look like raw Lua code rather than a prose reply?
+    /// Triggered when the AI forgets the code fence but still emits valid Lua.
+    /// </summary>
+    private static bool LooksLikeLua(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.TrimStart();
+        // Strong signals: starts with a Lua comment or known Lua call patterns
+        if (t.StartsWith("--"))                   return true;
+        if (t.StartsWith("local "))               return true;
+        if (t.StartsWith("function "))            return true;
+        if (t.StartsWith("hook."))                return true;
+        if (t.StartsWith("RunClientLua("))        return true;
+        if (t.StartsWith("RunSharedLua("))        return true;
+        if (t.StartsWith("timer."))               return true;
+        if (t.StartsWith("net."))                 return true;
+        if (t.StartsWith("if CLIENT"))            return true;
+        if (t.StartsWith("if SERVER"))            return true;
+        // Weaker: count Lua-isms vs English words; Lua wins if density is high
+        int luaHits = 0;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bhook\.Add\b"))    luaHits += 3;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\blocal\s+\w+\s*=")) luaHits += 2;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bend\b"))            luaHits += 2;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bfunction\b"))       luaHits += 2;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"RunClientLua|RunSharedLua")) luaHits += 5;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bnet\.Start\b"))   luaHits += 3;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\btimer\.\w+\b"))  luaHits += 3;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCompileString\b")) luaHits += 3;
+        // Penalise if it has sentence-like prose (multiple capital letters starting lines)
+        int proseLines = System.Text.RegularExpressions.Regex.Matches(text, @"^[A-Z][a-z]", System.Text.RegularExpressions.RegexOptions.Multiline).Count;
+        return luaHits >= 5 && proseLines <= 2;
+    }
+
     private async Task<bool> ClassifyPromptAsync(string prompt)
     {
         try
