@@ -254,6 +254,10 @@ public sealed class AgentOrchestrator
                                    $"- Hard 8192 entity limit — batch spawns, use `SafeRemoveEntityDelayed(ent, seconds)`\n" +
                                    $"- SWEP projectiles: offset spawn pos so they don't clip the player\n" +
                                    $"- `DynamicLight` is CLIENT only\n\n" +
+                                   $"## Client-Side Hooks (CLIENT realm only)\n" +
+                                   $"- `EntityTakeDamage` does NOT fire on the client. For client-side damage detection, check `LocalPlayer():Health()` deltas in `HUDPaint` or a `Think` hook.\n" +
+                                   $"- `OnEntityCreated` fires on client, but entities may not have all properties set yet.\n" +
+                                   $"- Use `render.SetScissorRect()` for clipped UI regions; remember to call with all zeros to disable.\n\n" +
                                    $"## Positioning\n" +
                                    $"Always position relative to the requesting player. Use `Player({userId})` to get the requesting player (their UserID is already substituted). `ply:ChatPrint(text)` is valid for sending chat messages to a player.\n\n" +
                                    (_projectsEnabled ? $"## Multi-File Addon Projects\n" +
