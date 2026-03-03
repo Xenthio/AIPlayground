@@ -195,8 +195,10 @@ local function ConnectToDaemon()
                     -- Provide GilbAI compatible environment functions
                     local env = setmetatable({
                         RunClientLua = function(code)
+                            print("[AIPlayground] RunClientLua called, sending " .. #code .. " bytes to clients...")
                             net.Start("AIPlayground_RunLuaClient")
                             net.WriteString(code)
+                            net.WriteString(scriptId .. "_Client")
                             net.Broadcast()
                         end,
                         RunSharedLua = function(code)
