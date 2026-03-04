@@ -14,6 +14,9 @@ public sealed class GilbAIMeta
     [JsonPropertyName("toolcalls")]
     public List<ToolCallExample>? ToolCalls { get; set; }
     
+    [JsonPropertyName("is_docs")]
+    public bool IsDocs { get; set; }
+
     [JsonPropertyName("embedding")]
     public float[]? Embedding { get; set; }
 }

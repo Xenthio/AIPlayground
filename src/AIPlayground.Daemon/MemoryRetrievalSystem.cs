@@ -40,6 +40,9 @@ public sealed class LuaExample
     [JsonPropertyName("code")]
     public required string Code { get; init; }
 
+    [JsonPropertyName("is_docs")]
+    public bool IsDoc { get; set; }
+
     [JsonPropertyName("embedding")]
     public float[]? Embedding { get; set; }
 }
@@ -115,7 +118,8 @@ public class MemoryRetrievalSystem
                             Tags = metaObj.Tags?.Trim(),
                             ToolCalls = metaObj.ToolCalls,
                             Code = code.Trim(),
-                            Embedding = embeddingData
+                            Embedding = embeddingData,
+                            IsDoc = metaObj.IsDocs
                         });
                     }
                 }
@@ -141,40 +145,61 @@ public class MemoryRetrievalSystem
         if (_examples.Count == 0) return string.Empty;
 
         var queryEmbedding = await _backend.GenerateEmbeddingAsync(query);
-        
-        var ranked = _examples
-            .Select(ex => new { 
-                Example = ex, 
-                Score = TensorPrimitives.CosineSimilarity(queryEmbedding, ex.Embedding!) 
+
+        var allRanked = _examples
+            .Select(ex => new {
+                Example = ex,
+                Score = TensorPrimitives.CosineSimilarity(queryEmbedding, ex.Embedding!)
             })
             .OrderByDescending(x => x.Score)
+            .ToList();
+
+        var docs = allRanked
+            .Where(x => x.Example.IsDoc && x.Score >= 0.68f)
             .Take(topK)
             .ToList();
 
-        if (ranked[0].Score < 0.3f) return string.Empty; // Not relevant enough
+        var examples = allRanked
+            .Where(x => !x.Example.IsDoc && x.Score >= 0.3f)
+            .Take(topK)
+            .ToList();
+
+        if (docs.Count == 0 && (examples.Count == 0 || examples[0].Score < 0.3f))
+            return string.Empty;
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("## Examples");
-        foreach (var match in ranked)
+
+        foreach (var match in docs)
         {
-            sb.AppendLine($"Player Prompt: {match.Example.Description}");
-            
-            if (match.Example.ToolCalls != null && match.Example.ToolCalls.Count > 0)
-            {
-                sb.AppendLine("Toolcalls:");
-                foreach (var tc in match.Example.ToolCalls)
-                {
-                    var argsStr = tc.Args != null ? JsonSerializer.Serialize(tc.Args) : "{}";
-                    var resStr = tc.Result != null ? JsonSerializer.Serialize(tc.Result) : "{}";
-                    sb.AppendLine($"- {tc.Tool}({argsStr}) -> {resStr}");
-                }
-            }
-            
-            sb.AppendLine("Response:");
-            sb.AppendLine("```lua");
+            sb.AppendLine($"## Documentation - {match.Example.Description}");
             sb.AppendLine(match.Example.Code);
-            sb.AppendLine("```");
             sb.AppendLine();
+        }
+
+        if (examples.Count > 0)
+        {
+            sb.AppendLine("## Examples");
+            foreach (var match in examples)
+            {
+                sb.AppendLine($"Player Prompt: {match.Example.Description}");
+
+                if (match.Example.ToolCalls != null && match.Example.ToolCalls.Count > 0)
+                {
+                    sb.AppendLine("Toolcalls:");
+                    foreach (var tc in match.Example.ToolCalls)
+                    {
+                        var argsStr = tc.Args != null ? JsonSerializer.Serialize(tc.Args) : "{}";
+                        var resStr = tc.Result != null ? JsonSerializer.Serialize(tc.Result) : "{}";
+                        sb.AppendLine($"- {tc.Tool}({argsStr}) -> {resStr}");
+                    }
+                }
+
+                sb.AppendLine("Response:");
+                sb.AppendLine("```lua");
+                sb.AppendLine(match.Example.Code);
+                sb.AppendLine("```");
+                sb.AppendLine();
+            }
         }
 
         return sb.ToString();
