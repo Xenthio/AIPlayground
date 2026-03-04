@@ -283,8 +283,12 @@ public sealed class AgentOrchestrator
                                    $"- `OnEntityCreated` fires on client, but entities may not have all properties set yet.\n" +
                                    $"- Use `render.SetScissorRect()` for clipped UI regions; remember to call with all zeros to disable.\n" +
                                    $"\n" +
-                                   $"## HUD Color Globals\n" +
+                                   $"## HUD System\n" +
                                    $"- `HL2Hud` (global table) is ALWAYS available on clients — GilbUtils auto-loads the HL2 HUD replacement (`cl_hl2_hud.lua`).\n" +
+                                   $"- The HL2 HUD is drawn via **EHUD** (ExtensibleHUD). Health/suit/ammo panels are registered as `base_element` on EHUD columns.\n" +
+                                   $"- **To replace a HUD panel**: do NOT add a `HUDShouldDraw` hook (native panels are already hidden). Instead, replace `EHUD.GetColumn(\"health\").base_element`, `EHUD.GetColumn(\"suit\").base_element`, or `EHUD.GetColumn(\"ammo\").base_element` with your own element object.\n" +
+                                   $"- **To restore defaults**: set `base_element` back to `HL2Hud.healthElem`, `HL2Hud.suitElem`, or `HL2Hud.ammoElem`.\n" +
+                                   $"- **To add extra elements** above a column: `EHUD.AddToColumn(\"health\", \"my_id\", myElem, priority)`.\n" +
                                    $"- `HL2Hud.Colors` fields: FgColor, BrightFg, DamagedFg, BrightDamagedFg, BgColor, DamagedBg, AuxHigh, AuxLow, AuxDisabled (alpha number).\n" +
                                    $"- To recolor: update `HL2Hud.Colors.*` fields directly inside `RunClientLua`.\n" +
                                    $"- **IMPORTANT**: After updating Colors, call `HL2Hud.ApplyColors()` to propagate changes to live animation state. Without this, colors only update when animations fire (e.g. damage).\n" +
