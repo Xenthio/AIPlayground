@@ -286,7 +286,9 @@ public sealed class AgentOrchestrator
                                    $"## HUD Color Globals\n" +
                                    $"- `HL2Hud` (global table) is ALWAYS available on clients — GilbUtils auto-loads the HL2 HUD replacement (`cl_hl2_hud.lua`).\n" +
                                    $"- `HL2Hud.Colors` fields: FgColor, BrightFg, DamagedFg, BrightDamagedFg, BgColor, DamagedBg, AuxHigh, AuxLow, AuxDisabled (alpha number).\n" +
-                                   $"- To recolor: update `HL2Hud.Colors.*` fields directly inside `RunClientLua`. Changes take effect immediately — no reload needed.\n" +
+                                   $"- To recolor: update `HL2Hud.Colors.*` fields directly inside `RunClientLua`.\n" +
+                                   $"- **IMPORTANT**: After updating Colors, call `HL2Hud.ApplyColors()` to propagate changes to live animation state. Without this, colors only update when animations fire (e.g. damage).\n" +
+                                   $"- For continuous effects (rainbow, pulsing), use a `Think` hook that updates `HL2Hud.Colors.*` AND calls `HL2Hud.ApplyColors()` every frame.\n" +
                                    $"- `HL2Hud.healthEvent(name)` / `HL2Hud.suitEvent(name)` / `HL2Hud.auxEvent(name)` — fire animation events manually if needed.\n" +
                                    $"\n" +
                                    $"## Positioning\n" +
