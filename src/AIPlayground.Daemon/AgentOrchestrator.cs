@@ -15,7 +15,7 @@ public sealed class AgentOrchestrator
     private readonly string _addonPath;
     private readonly IBackendProvider _backend;
     private readonly List<ITool> _tools;
-    private string _currentModel = "google/gemini-3-flash-preview";
+    private string _currentModel = "google/gemini-3.1-flash-lite-preview";
     private bool _useHistory = false;
 
     // Prompt router: if set, use this model to classify prompt complexity before sending to main model
