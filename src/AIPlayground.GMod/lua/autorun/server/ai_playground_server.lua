@@ -114,6 +114,7 @@ local function ConnectToDaemon()
                     local safeCode = string.gsub(code, "AddCSLuaFile%(.-%)", "-- AddCSLuaFile omitted for hotreload")
 
                     local env = setmetatable({
+                        RequestingPlayer = IsValid(_lastRequestingPly) and _lastRequestingPly or nil,
                         RunClientLua = function(c)
                             net.Start("AIPlayground_RunLuaClient")
                             net.WriteString(c)
@@ -194,6 +195,7 @@ local function ConnectToDaemon()
                     
                     -- Provide GilbAI compatible environment functions
                     local env = setmetatable({
+                        RequestingPlayer = IsValid(_lastRequestingPly) and _lastRequestingPly or nil,
                         RunClientLua = function(code)
                             print("[AIPlayground] RunClientLua called, sending " .. #code .. " bytes to clients...")
                             net.Start("AIPlayground_RunLuaClient")
@@ -319,12 +321,14 @@ end
 
 -- Track the last requesting player so error fixup calls use the right UserID
 local _lastRequestingPlayer = nil
+local _lastRequestingPly = nil
 
 -- Client asking Daemon
 net.Receive("AIPlayground_AskDaemon", function(len, ply)
     if not ply:IsSuperAdmin() then return end
     local prompt = net.ReadString()
     _lastRequestingPlayer = ply:Nick()
+    _lastRequestingPly = ply
     AskDaemonServer(prompt, ply:Nick())
 end)
 
