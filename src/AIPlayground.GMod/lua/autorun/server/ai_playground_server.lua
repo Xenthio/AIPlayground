@@ -110,7 +110,7 @@ local function ConnectToDaemon()
                 -- Execute extracted Lua blocks
                 for _, code in ipairs(luaBlocks) do
                     print("[AIPlayground] Running inline Lua from response...")
-                    local scriptId = "AI_Inline_" .. tostring(os.time())
+                    local scriptId = "AI_" .. tostring(__AI_CONV_ID or "UNKNOWN") .. "_" .. tostring(os.time())
                     local safeCode = string.gsub(code, "AddCSLuaFile%(.-%)", "-- AddCSLuaFile omitted for hotreload")
 
                     local env = setmetatable({
@@ -190,7 +190,7 @@ local function ConnectToDaemon()
                 else
                     print("[AIPlayground] Executing AI Lua script...")
                     -- Generate a unique identifier for this code execution
-                    local scriptId = "AI_Generated_Script_" .. tostring(os.time())
+                    local scriptId = "AI_" .. tostring(__AI_CONV_ID or "UNKNOWN") .. "_" .. tostring(os.time())
                     
                     local safeCode = string.gsub(script, "AddCSLuaFile%(.-%)", "-- AddCSLuaFile omitted for hotreload")
                     
@@ -339,13 +339,13 @@ hook.Add("OnLuaError", "AIPlayground_GlobalErrorCatcher", function(errorString, 
     if realm == 1 or realm == "client" then return end 
 
     local isAIError = false
-    if string.find(errorString, "ai_projects") or string.find(errorString, "AI_Generated_Script") then
+    if string.find(errorString, "ai_projects") or string.find(errorString, "AI_UNKNOWN") or string.find(errorString, "^AI_[A-Z0-9]+_") then
         isAIError = true
     end
 
     if not isAIError and stack then
         for _, level in ipairs(stack) do
-            if string.find(level.File, "ai_projects") or string.find(level.File, "AI_Generated_Script") then
+            if string.find(level.File, "ai_projects") or string.find(level.File, "AI_UNKNOWN") or string.find(level.File, "^AI_[A-Z0-9]+_") then
                 isAIError = true
                 break
             end
