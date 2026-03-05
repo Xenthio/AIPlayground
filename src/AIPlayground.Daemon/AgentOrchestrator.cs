@@ -80,8 +80,15 @@ public sealed class AgentOrchestrator
         return conv;
     }
 
-    public AgentOrchestrator(string gmodBasePath, string addonPath, IBackendProvider backend, IGModTransport transport, MemoryRetrievalSystem memorySystem)
+    // Expose most recent conversation history for RecordExampleTool
+    public IReadOnlyList<ChatMessage> GetChatHistory() =>
+        _conversations.Values.LastOrDefault()?.History ?? Array.Empty<ChatMessage>();
+
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
+        await _transport.StartAsync(cancellationToken);
+    }
+
         _addonPath = addonPath;
         _backend = backend;
         _transport = transport;
@@ -378,34 +385,30 @@ public sealed class AgentOrchestrator
                     Model = modelForThisTurn,
                     Messages = messages,
                     Tools = GetActiveTools().Select(t => t.GetDefinition()).ToList(),
-                    Stream = true
-                };
+                                };
 
                 Console.WriteLine($"[Daemon] Streaming prompt to LLM (Turn {turnCount + 1})...");
 
-                var logEntry = new SessionLogEntry
+                var logEntry = new SessionLogger.Entry
                 {
-                    Timestamp = DateTime.UtcNow,
-                    Player = player,
-                    Prompt = prompt,
-                    Model = modelForThisTurn
+                    Prompt = $"[{conv.ConversationId}] [{player}] {prompt}",
                 };
 
                 string finalResponseText = "";
                 List<ToolCall>? toolCalls = null;
 
-                await foreach (var chunk in _backend.StreamCompletionAsync(completionReq))
+                await foreach (var chunk in _backend.GenerateCompletionStreamAsync(completionReq))
                 {
                     if (chunk.ToolCalls != null && chunk.ToolCalls.Count > 0)
                     {
                         toolCalls = chunk.ToolCalls;
                     }
-                    if (!string.IsNullOrEmpty(chunk.Content))
+                    if (!string.IsNullOrEmpty(chunk.ContentDelta))
                     {
-                        finalResponseText += chunk.Content;
-                        var isThought = chunk.Content.TrimStart().StartsWith("<thought>");
+                        finalResponseText += chunk.ContentDelta;
+                        var isThought = chunk.ContentDelta.TrimStart().StartsWith("<thought>");
                         if (!isThought)
-                            Console.Write(chunk.Content);
+                            Console.Write(chunk.ContentDelta);
                     }
                 }
 
@@ -428,11 +431,11 @@ public sealed class AgentOrchestrator
                         if (tool != null)
                         {
                             var result = await tool.ExecuteAsync(argsDoc);
-                            var resultText = result.IsSuccess ? result.Output : $"Error: {result.Error}";
-                            Console.WriteLine($"[TOOL RESULT] {(result.IsSuccess ? "Success" : "Failed")}\n{resultText}");
-                            await _transport.SendChatAsync($"[TOOL RESULT] {(result.IsSuccess ? "Success" : "Failed")}\n{resultText}");
+                            var resultText = result.Success ? result.Content : $"Error: {result.Error}";
+                            Console.WriteLine($"[TOOL RESULT] {(result.Success ? "Success" : "Failed")}\n{resultText}");
+                            await _transport.SendChatAsync($"[TOOL RESULT] {(result.Success ? "Success" : "Failed")}\n{resultText}");
 
-                            var resMsg = result.IsSuccess
+                            var resMsg = result.Success
                                 ? ChatMessage.ToolResult(tc.Id, resultText)
                                 : ChatMessage.ToolResult(tc.Id, $"Tool failed: {result.Error}");
                             messages.Add(resMsg);
@@ -542,14 +545,13 @@ public sealed class AgentOrchestrator
                 ChatMessage.System("Classify the following GMod Lua request as SIMPLE or COMPLEX. SIMPLE = basic spawn, give item, one-liner effects. COMPLEX = custom SWEP, multi-file addon, advanced physics, HUD system. Reply with only SIMPLE or COMPLEX."),
                 ChatMessage.User(prompt)
             },
-            Stream = false
-        };
+                };
 
         string result = "COMPLEX";
-        await foreach (var chunk in _backend.StreamCompletionAsync(req))
+        await foreach (var chunk in _backend.GenerateCompletionStreamAsync(req))
         {
-            if (!string.IsNullOrEmpty(chunk.Content))
-                result = chunk.Content.Trim().ToUpperInvariant();
+            if (!string.IsNullOrEmpty(chunk.ContentDelta))
+                result = chunk.ContentDelta.Trim().ToUpperInvariant();
         }
         return result.Contains("SIMPLE") ? "SIMPLE" : "COMPLEX";
     }
