@@ -280,7 +280,7 @@ end
 ConnectToDaemon()
 
 function AskDaemonServer(promptText, playerName)
-    playerName = playerName or "Server"
+    playerName = playerName or _lastRequestingPlayer or "Server"
     
     -- Build dynamic context string
     local plys = player.GetAll()
@@ -317,10 +317,14 @@ function AskDaemonServer(promptText, playerName)
     end
 end
 
+-- Track the last requesting player so error fixup calls use the right UserID
+local _lastRequestingPlayer = nil
+
 -- Client asking Daemon
 net.Receive("AIPlayground_AskDaemon", function(len, ply)
     if not ply:IsSuperAdmin() then return end
     local prompt = net.ReadString()
+    _lastRequestingPlayer = ply:Nick()
     AskDaemonServer(prompt, ply:Nick())
 end)
 
