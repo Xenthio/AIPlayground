@@ -82,7 +82,7 @@ public sealed class AgentOrchestrator
 
     // Expose most recent conversation history for RecordExampleTool
     public IReadOnlyList<ChatMessage> GetChatHistory() =>
-        _conversations.Values.LastOrDefault()?.History ?? Array.Empty<ChatMessage>();
+        (IReadOnlyList<ChatMessage>?)_conversations.Values.LastOrDefault()?.History ?? Array.Empty<ChatMessage>();
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {

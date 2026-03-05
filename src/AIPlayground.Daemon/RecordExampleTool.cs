@@ -64,13 +64,11 @@ public sealed class RecordExampleTool : ITool
 
             // Walk backwards through history to find the most recent tool calls related to this request
             // This is a simplified extraction; it grabs all tool calls since the last user message
-            bool foundUserMessage = false;
             for (int i = history.Count - 1; i >= 0; i--)
             {
                 var msg = history[i];
                 if (msg.Role == "user")
                 {
-                    foundUserMessage = true;
                     break;
                 }
 
