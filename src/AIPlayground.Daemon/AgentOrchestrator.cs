@@ -17,6 +17,7 @@ public sealed class AgentOrchestrator
     private readonly List<ITool> _tools;
     private string _currentModel = "google/gemini-3-flash-preview";
     private bool _useHistory = false;
+    private int _conversationStartIndex = 0; // index into _chatHistory where current conversation started
 
     // Prompt router: if set, use this model to classify prompt complexity before sending to main model
     private string? _routerModel = null;
@@ -311,17 +312,26 @@ public sealed class AgentOrchestrator
                                    (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
             };
 
-            // Always inject last 6 messages as short-term context (error fixer needs to know what it was trying to do)
-            // Full history (opt-in via !history on) goes beyond that
+            // Track conversation start: real user messages reset the start index; error fixes ("Server") do not
+            bool isErrorFix = player == "Server";
+            if (!isErrorFix)
+            {
+                _conversationStartIndex = _chatHistory.Count; // new conversation starts here
+            }
+
+            // History injection:
+            // - !history on → full history
+            // - error fix → inject from current conversation start (so fixer sees original request)
+            // - real user message (history off) → no prior history
             if (_useHistory)
             {
                 messages.AddRange(_chatHistory);
             }
-            else if (_chatHistory.Count > 0)
+            else if (isErrorFix && _chatHistory.Count > 0)
             {
-                // Short-term window: last 6 messages regardless of history toggle
-                var window = _chatHistory.Skip(Math.Max(0, _chatHistory.Count - 6)).ToList();
-                messages.AddRange(window);
+                // Inject only the current conversation's history
+                var convHistory = _chatHistory.Skip(_conversationStartIndex).ToList();
+                messages.AddRange(convHistory);
             }
 
             // Add the new user prompt
