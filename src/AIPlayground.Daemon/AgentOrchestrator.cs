@@ -394,6 +394,13 @@ public sealed class AgentOrchestrator
                 var logEntry = new SessionLogger.Entry
                 {
                     Prompt = $"[{conv.ConversationId}] [{player}] {prompt}",
+                    Messages = messages.Select(m => new SessionLogger.MessageLogEntry
+                    {
+                        Role        = m.Role,
+                        Content     = m.Content ?? "",
+                        ToolCallId  = m.ToolCallId,
+                        ToolCallNames = m.ToolCalls?.Select(tc => tc.Function.Name).ToList()
+                    }).ToList()
                 };
 
                 string finalResponseText = "";
@@ -473,8 +480,10 @@ public sealed class AgentOrchestrator
                 // Dispatch pending Lua to GMod
                 while (_pendingLuaExecution.TryDequeue(out var luaCode))
                 {
+                    logEntry.ExecutedLua.Add(luaCode);
                     await _transport.RunLuaAsync($"__AI_CONV_ID = \"{conv.ConversationId}\"\n" + luaCode);
                 }
+
                 if (!string.IsNullOrWhiteSpace(finalResponseText))
                 {
                     var isThought = finalResponseText.TrimStart().StartsWith("<thought>");
