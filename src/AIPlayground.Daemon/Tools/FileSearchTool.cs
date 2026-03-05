@@ -57,6 +57,7 @@ public sealed class FileSearchTool : ITool
             // Determine if recursive search is needed (only recurse if pattern has no specific filename filter)
             bool recursive = !searchStr.Contains('.');
             var luaRecursive = recursive ? "true" : "false";
+            var uniqueId = Guid.NewGuid().ToString("N");
 
             var luaScript = $$"""
             if not file.Exists("aiplayground/asset_cache.json", "DATA") then
