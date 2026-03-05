@@ -20,10 +20,15 @@ net.Receive("AIPlayground_RunLuaClient", function()
     if code and code ~= "" then
         print("[AIPlayground] Executing Server-Broadcasted HotReload on Client (" .. scriptId .. ")...")
         
+        ENT = ENT or {}
+        SWEP = SWEP or {Primary = {}, Secondary = {}}
         local func = CompileString(code, scriptId, false)
         if isfunction(func) then
             pcall(func)
         end
+        ENT = nil
+        SWEP = nil
+        RunConsoleCommand("spawnmenu_reload")
     end
 end)
 
