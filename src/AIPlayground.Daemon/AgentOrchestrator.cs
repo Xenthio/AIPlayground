@@ -7,6 +7,37 @@ using AIPlayground.Daemon.Transports;
 namespace AIPlayground.Daemon;
 
 /// <summary>
+/// Per-player conversation state: history, conversation ID, and script ID counter.
+/// </summary>
+public sealed class ConversationState
+{
+    public string PlayerName { get; }
+    public string ConversationId { get; private set; }
+    public List<ChatMessage> History { get; } = new();
+    private int _scriptCounter = 0;
+
+    public ConversationState(string playerName)
+    {
+        PlayerName = playerName;
+        ConversationId = NewId();
+    }
+
+    /// <summary>Start a fresh conversation (new prompt, not an error fix).</summary>
+    public void StartNewConversation()
+    {
+        ConversationId = NewId();
+        History.Clear();
+        _scriptCounter = 0;
+    }
+
+    /// <summary>Unique script name for this turn, embeds conversation ID for error traceability.</summary>
+    public string NextScriptId() => $"AI_{ConversationId}_{++_scriptCounter}";
+
+    private static string NewId() =>
+        Guid.NewGuid().ToString("N")[..8].ToUpper();
+}
+
+/// <summary>
 /// Orchestrates the Agent workflow between Garry's Mod and the LLM
 /// </summary>
 public sealed class AgentOrchestrator
@@ -16,8 +47,10 @@ public sealed class AgentOrchestrator
     private readonly IBackendProvider _backend;
     private readonly List<ITool> _tools;
     private string _currentModel = "google/gemini-3-flash-preview";
-    private bool _useHistory = false;
-    private int _conversationStartIndex = 0; // index into _chatHistory where current conversation started
+
+    // !history on = inject cross-conversation context (globals/SWEPs created recently) into system prompt
+    private bool _globalHistoryEnabled = false;
+    private readonly List<string> _globalContextLog = new(); // compact summaries of what was created
 
     // Prompt router: if set, use this model to classify prompt complexity before sending to main model
     private string? _routerModel = null;
@@ -30,13 +63,22 @@ public sealed class AgentOrchestrator
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingLuaExecution = new();
 
     private readonly string _dataPath;
-
     private readonly string _projectsAddonPath;
     
     private readonly MemoryRetrievalSystem _memorySystem;
-    private readonly List<ChatMessage> _chatHistory = new();
 
-    public IReadOnlyList<ChatMessage> GetChatHistory() => _chatHistory;
+    // Per-player conversation state
+    private readonly Dictionary<string, ConversationState> _conversations = new();
+
+    private ConversationState GetConversation(string playerName)
+    {
+        if (!_conversations.TryGetValue(playerName, out var conv))
+        {
+            conv = new ConversationState(playerName);
+            _conversations[playerName] = conv;
+        }
+        return conv;
+    }
 
     public AgentOrchestrator(string gmodBasePath, string addonPath, IBackendProvider backend, IGModTransport transport, MemoryRetrievalSystem memorySystem)
     {
@@ -48,21 +90,13 @@ public sealed class AgentOrchestrator
 
         // We'll write directly into garrysmod/addons, but the tools will prepend the ~ internally
         _projectsAddonPath = Path.Combine(gmodBasePath, "garrysmod", "addons");
+        _dataPath = Path.Combine(gmodBasePath, "garrysmod", "data");
 
-        // Setup data directory inside Garry's Mod for communication
-        _dataPath = Path.Combine(gmodBasePath, "garrysmod", "data", "aiplayground");
-        Directory.CreateDirectory(_dataPath);
-        _logger = new SessionLogger(Path.Combine(_dataPath, "logs"));
-
-        // Delete legacy file bridge artifacts
-        var legacyInbox = Path.Combine(_dataPath, "inbox.json");
-        var legacyOutbox = Path.Combine(_dataPath, "outbox.json");
-        if (File.Exists(legacyInbox)) File.Delete(legacyInbox);
-        if (File.Exists(legacyOutbox)) File.Delete(legacyOutbox);
+        var logPath = Path.Combine(_dataPath, "aiplayground", "logs");
+        _logger = new SessionLogger(logPath);
 
         _tools = new List<ITool>
         {
-            new WriteFileTool(_projectsAddonPath),
             new AIPlayground.Daemon.Tools.ReadFileTool(_projectsAddonPath),
             new AIPlayground.Daemon.Tools.HotReloadFileTool(_projectsAddonPath, code => _pendingLuaExecution.Enqueue(code)),
             new AIPlayground.Daemon.Tools.ReloadSpawnMenuTool(code => _pendingLuaExecution.Enqueue(code)),
@@ -70,21 +104,14 @@ public sealed class AgentOrchestrator
             new AIPlayground.Daemon.Tools.FileSearchTool(_transport, gmodBasePath),
             new AIPlayground.Daemon.Tools.RecordExampleTool(@"D:\gilbai\examples", memorySystem, this)
         };
+
+        var projectToolNames = new HashSet<string> { "read_file", "hot_reload_file", "reload_spawnmenu", "list_files", "write_file" };
+        _projectToolNames = projectToolNames;
     }
 
-    private static readonly HashSet<string> _projectToolNames = new()
-    {
-        "write_file", "read_file", "hot_reload_file", "list_files", "file_search", "reload_spawn_menu", "record_example"
-    };
-
+    private readonly HashSet<string> _projectToolNames;
     private IEnumerable<ITool> GetActiveTools() =>
         _projectsEnabled ? _tools : _tools.Where(t => !_projectToolNames.Contains(t.Name));
-
-    public async Task StartAsync(CancellationToken cancellationToken)
-    {
-        Console.WriteLine($"[AgentPlaygroundRunner] Connecting Transport to Garry's Mod...");
-        await _transport.StartAsync(cancellationToken);
-    }
 
     private bool _isProcessing = false;
     private readonly Queue<(string Player, int UserId, string Prompt, string DynamicContext)> _promptQueue = new();
@@ -128,9 +155,10 @@ public sealed class AgentOrchestrator
             // Intercept !model commands directly in the daemon
             if (prompt.StartsWith("!model "))
             {
-                _currentModel = prompt.Substring(7).Trim();
-                Console.WriteLine($"[Daemon] Model switched to {_currentModel}");
-                await _transport.SendChatAsync($"Switched backend model to {_currentModel}");
+                var modelName = prompt.Substring(7).Trim();
+                _currentModel = modelName;
+                Console.WriteLine($"[Daemon] Model switched to: {modelName}");
+                await _transport.SendChatAsync($"Model switched to: {modelName}");
                 return;
             }
 
@@ -138,17 +166,15 @@ public sealed class AgentOrchestrator
             if (prompt.StartsWith("!router "))
             {
                 var arg = prompt.Substring(8).Trim();
-                if (arg.Equals("off", StringComparison.OrdinalIgnoreCase))
+                if (arg == "off")
                 {
                     _routerModel = null;
-                    Console.WriteLine("[Daemon] Prompt router disabled.");
                     await _transport.SendChatAsync("Prompt router disabled.");
                 }
                 else
                 {
                     _routerModel = arg;
-                    Console.WriteLine($"[Daemon] Prompt router enabled with model: {_routerModel}");
-                    await _transport.SendChatAsync($"Prompt router enabled: {_routerModel}");
+                    await _transport.SendChatAsync($"Prompt router enabled: {arg}");
                 }
                 return;
             }
@@ -156,19 +182,17 @@ public sealed class AgentOrchestrator
             // Intercept !history toggle command
             if (prompt.StartsWith("!history "))
             {
-                var toggle = prompt.Substring(9).Trim().ToLower();
-                if (toggle == "off" || toggle == "false")
+                var arg = prompt.Substring(9).Trim();
+                if (arg == "off")
                 {
-                    _useHistory = false;
-                    _chatHistory.Clear();
-                    Console.WriteLine($"[Daemon] Chat history tracking disabled and cleared.");
-                    await _transport.SendChatAsync("Chat history disabled. Operating in stateless one-shot mode.");
+                    _globalHistoryEnabled = false;
+                    _globalContextLog.Clear();
+                    await _transport.SendChatAsync("Global history disabled and cleared.");
                 }
-                else if (toggle == "on" || toggle == "true")
+                else if (arg == "on")
                 {
-                    _useHistory = true;
-                    Console.WriteLine($"[Daemon] Chat history tracking enabled.");
-                    await _transport.SendChatAsync("Chat history enabled.");
+                    _globalHistoryEnabled = true;
+                    await _transport.SendChatAsync("Global history enabled. Recent globals/hooks/SWEPs will be injected into future prompts.");
                 }
                 return;
             }
@@ -176,8 +200,8 @@ public sealed class AgentOrchestrator
             // Intercept !projects toggle
             if (prompt.StartsWith("!projects "))
             {
-                var arg = prompt.Substring(10).Trim().ToLower();
-                _projectsEnabled = arg == "on" || arg == "true";
+                var arg = prompt.Substring(10).Trim();
+                _projectsEnabled = arg == "on";
                 Console.WriteLine($"[Daemon] Project tools {(_projectsEnabled ? "enabled" : "disabled")}.");
                 await _transport.SendChatAsync($"Project tools {(_projectsEnabled ? "enabled" : "disabled")}.");
                 return;
@@ -190,19 +214,13 @@ public sealed class AgentOrchestrator
                 var examplePath = Path.Combine(@"D:\gilbai\examples", exampleName, "response.lua");
                 if (File.Exists(examplePath))
                 {
-                    var code = File.ReadAllText(examplePath);
-                    // Substitute {{ID}} with the requesting player's userId
-                    code = code.Replace("{{ID}}", userId.ToString());
-                    Console.WriteLine($"[Daemon] Running example: {exampleName}");
-                    await _transport.SendChatAsync($"[AI System] Running example: {exampleName}");
-                    await _transport.RunLuaAsync(code);
+                    var code = await File.ReadAllTextAsync(examplePath);
+                    _pendingLuaExecution.Enqueue(code);
+                    await _transport.SendChatAsync($"Running example: {exampleName}");
                 }
                 else
                 {
-                    // List available examples
-                    var examplesRoot = @"D:\gilbai\examples";
-                    var dirs = Directory.Exists(examplesRoot) ? Directory.GetDirectories(examplesRoot).Select(Path.GetFileName) : [];
-                    await _transport.SendChatAsync($"[AI System] Example '{exampleName}' not found. Available: {string.Join(", ", dirs)}");
+                    await _transport.SendChatAsync($"Example not found: {exampleName}");
                 }
                 return;
             }
@@ -238,36 +256,62 @@ public sealed class AgentOrchestrator
             string modelForThisTurn = _currentModel;
             if (_routerModel != null)
             {
-                bool isComplex = await ClassifyPromptAsync(prompt);
-                modelForThisTurn = isComplex ? _currentModel : "openai/gpt-oss-120b";
-                Console.WriteLine($"[Router] {(isComplex ? "COMPLEX" : "SIMPLE")} → {modelForThisTurn}");
+                var classification = await ClassifyPromptAsync(prompt, _routerModel);
+                Console.WriteLine($"[Router] {classification}");
+                if (classification == "SIMPLE")
+                    modelForThisTurn = "openai/gpt-oss-120b";
             }
 
-            // Fetch embedded memory dynamically, substitute {{ID}} with requesting player's UserID
-            var relevantExamples = await _memorySystem.GetRelevantExamplesAsync(prompt);
-            if (!string.IsNullOrWhiteSpace(relevantExamples))
-                relevantExamples = relevantExamples.Replace("{{ID}}", userId.ToString());
+            // Determine if this is an error fix (sent by "Server") or a real user request
+            bool isErrorFix = player == "Server";
 
-            // Session log entry — accumulates data across all turns for this prompt
-            var logEntry = new SessionLogger.Entry { Prompt = prompt };
+            // Get or create per-player conversation state
+            // Error fixes route to the player whose conversation we're fixing
+            // (the Lua side embeds the conversationId in the error message)
+            ConversationState conv;
+            if (isErrorFix)
+            {
+                // Try to extract conversation ID from error message: look for "AI_XXXXXXXX_"
+                var convIdMatch = System.Text.RegularExpressions.Regex.Match(prompt, @"AI_([A-Z0-9]{8})_");
+                if (convIdMatch.Success)
+                {
+                    var convId = convIdMatch.Groups[1].Value;
+                    conv = _conversations.Values.FirstOrDefault(c => c.ConversationId == convId)
+                           ?? GetConversation("Server");
+                }
+                else
+                {
+                    // Fallback: use most recent non-Server conversation
+                    conv = _conversations.Values.LastOrDefault(c => c.PlayerName != "Server")
+                           ?? GetConversation("Server");
+                }
+            }
+            else
+            {
+                conv = GetConversation(player);
+                conv.StartNewConversation(); // fresh conversation for each real user request
+            }
 
-            // Basic Agent Loop execution
+            Console.WriteLine($"[Daemon] Conv [{conv.ConversationId}] {player}: streaming...");
+
+            // Get relevant examples from memory
+            string relevantExamples = await _memorySystem.GetRelevantExamplesAsync(prompt);
+
+            // Build global context injection if !history on
+            string globalContextSection = "";
+            if (_globalHistoryEnabled && _globalContextLog.Count > 0)
+            {
+                var recent = _globalContextLog.TakeLast(10).ToList();
+                globalContextSection = $"## Recent Session Context\nThe following things were created in this session and can be referenced or built upon:\n" +
+                                       string.Join("\n", recent) + "\n\n";
+            }
+
             var messages = new List<ChatMessage>
             {
-                ChatMessage.System($"You are an agentic Garry's Mod Addon developer AI. Produce self-contained GMod Lua code for player tasks. Default GMod API only.\n\n" +
-                                   $"## Available Shared Addons (always loaded — use these, do not reimplement)\n" +
-                                   $"### GilbUtils\n" +
-                                   $"- `GilbUtils.Gibs.Explode(ent, dmg)` — explode any entity into HL1-accurate gibs. Handles overkill scaling, head gib, blood decals, bodysplat sound. Optional 3rd arg: `{{ model=..., count=4, headGib=true }}`\n" +
-                                   $"- `GilbUtils.Gibs.SpawnGib(model, bodygroup, pos, vel, bloodColor)` — spawn a single `hl1_hgib` at pos with the given velocity. Returns the gib; set `.GibVelocity` and `.AngVelocity` after spawn.\n" +
-                                   $"- `hl1_hgib` and `hl1_debris_gib` scripted entities are registered and available — do NOT redefine them.\n" +
-                                   $"- All gib spawning is SERVER only.\n\n" +
-                                   $"## Realms\n" +
-                                   $"- **Default: SERVER** (entities, hooks, physics, health, gravity)\n" +
-                                   $"- `RunClientLua(code)` — client only (UI, effects, sounds, dynamic lights)\n" +
-                                   $"- `RunSharedLua(code)` — both realms (use `if SERVER then` / `if CLIENT then` inside)\n\n" +
-                                   $"## Lua Pitfalls\n" +
-                                   $"- Delay: `timer.Simple(n, fn)` (NOT setTimeout)\n" +
-                                   $"- Entity creation: SERVER only\n" +
+                ChatMessage.System(
+                                   $"You are an AI assistant embedded inside Garry's Mod (GMod), a Lua-powered sandbox game.\n" +
+                                   $"You help players by writing Lua scripts that run directly on the GMod server.\n\n" +
+                                   $"## Lua Gotchas\n" +
                                    $"- Net messages: `util.AddNetworkString` on server first\n" +
                                    $"- No `continue` keyword — use `if not cond then`\n" +
                                    $"- `true`/`false` lowercase; `NULL` = entity check, `nil` = Lua null\n" +
@@ -278,7 +322,7 @@ public sealed class AgentOrchestrator
                                    $"- SWEP projectiles: offset spawn pos so they don't clip the player\n" +
                                    $"- `DynamicLight` is CLIENT only\n" +
                                    $"- SWEP table MUST pre-declare sub-tables: `local SWEP = {{}}; SWEP.Primary = {{}}; SWEP.Secondary = {{}}` before setting `.Primary.ClipSize` etc. — indexing nil = crash\n" +
-                                   $"- `Player(N):ChatPrint()` — ALWAYS guard with `if SERVER then` and `if IsValid(ply) then`. Never call at top-level unfenced code — the realm may be CLIENT.\n\n" +
+                                   $"- `RequestingPlayer:ChatPrint()` — ALWAYS guard with `if SERVER then`. Never call at top-level unfenced code — the realm may be CLIENT.\n\n" +
                                    $"## Client-Side Hooks (CLIENT realm only)\n" +
                                    $"- `EntityTakeDamage` does NOT fire on the client. For client-side damage detection, check `LocalPlayer():Health()` deltas in `HUDPaint` or a `Think` hook.\n" +
                                    $"- `OnEntityCreated` fires on client, but entities may not have all properties set yet.\n" +
@@ -309,42 +353,23 @@ public sealed class AgentOrchestrator
                                    $"if SERVER then if IsValid(RequestingPlayer) then RequestingPlayer:ChatPrint(\"feedback message\") end end\n\n" +
                                    $"## Game State\n" +
                                    $"{dynamicContext}\n\n" +
+                                   globalContextSection +
                                    (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
             };
 
-            // Track conversation start: real user messages reset the start index; error fixes ("Server") do not
-            bool isErrorFix = player == "Server";
-            if (!isErrorFix)
-            {
-                _conversationStartIndex = _chatHistory.Count; // new conversation starts here
-            }
-
-            // History injection:
-            // - !history on → full history
-            // - error fix → inject from current conversation start (so fixer sees original request)
-            // - real user message (history off) → no prior history
-            if (_useHistory)
-            {
-                messages.AddRange(_chatHistory);
-            }
-            else if (isErrorFix && _chatHistory.Count > 0)
-            {
-                // Inject only the current conversation's history
-                var convHistory = _chatHistory.Skip(_conversationStartIndex).ToList();
-                messages.AddRange(convHistory);
-            }
+            // Always inject this conversation's history (error fixes see the original request + prior turns)
+            messages.AddRange(conv.History);
 
             // Add the new user prompt
             var userMsg = ChatMessage.User($"[From {player}]: {prompt}");
             messages.Add(userMsg);
+            conv.History.Add(userMsg);
 
-            // Save ONLY the new user prompt to history
-            _chatHistory.Add(userMsg);
-            // Cap short-term history at 40 messages to prevent unbounded growth
-            if (_chatHistory.Count > 40) _chatHistory.RemoveAt(0);
+            // Cap per-conversation history at 30 messages
+            if (conv.History.Count > 30) conv.History.RemoveAt(0);
 
             int turnCount = 0;
-            const int maxTurns = 5; // Prevent infinite loops
+            const int maxTurns = 5;
 
             while (turnCount < maxTurns)
             {
@@ -353,311 +378,179 @@ public sealed class AgentOrchestrator
                     Model = modelForThisTurn,
                     Messages = messages,
                     Tools = GetActiveTools().Select(t => t.GetDefinition()).ToList(),
-                    Temperature = 0.7
+                    Stream = true
                 };
 
                 Console.WriteLine($"[Daemon] Streaming prompt to LLM (Turn {turnCount + 1})...");
-                
-                string finalResponseText = "";
-                var toolCalls = new List<AgentSharp.Core.Interfaces.ToolCall>();
-                
-                string contentBuffer = "";
-                string thoughtBuffer = "";
 
-                // Stream the response directly to the Garry's Mod WebSocket
-                await foreach (var chunk in _backend.GenerateCompletionStreamAsync(completionReq))
+                var logEntry = new SessionLogEntry
                 {
-                    if (!string.IsNullOrEmpty(chunk.ReasoningDelta))
-                    {
-                        Console.ForegroundColor = ConsoleColor.DarkGray;
-                        Console.Write(chunk.ReasoningDelta);
-                        Console.ResetColor();
-                        
-                        finalResponseText += chunk.ReasoningDelta;
-                        thoughtBuffer += chunk.ReasoningDelta;
-                        
-                        // Only send the thought over WebSocket when it hits a newline, punctuation, or gets too long
-                        if (thoughtBuffer.Contains("\n") || thoughtBuffer.Contains(".") || thoughtBuffer.Contains("!") || thoughtBuffer.Length > 80)
-                        {
-                            await _transport.SendChatAsync($"<thought> {thoughtBuffer}");
-                            thoughtBuffer = "";
-                        }
-                    }
-                    
-                    if (!string.IsNullOrEmpty(chunk.ContentDelta))
-                    {
-                        Console.ForegroundColor = ConsoleColor.Cyan;
-                        Console.Write(chunk.ContentDelta);
-                        Console.ResetColor();
+                    Timestamp = DateTime.UtcNow,
+                    Player = player,
+                    Prompt = prompt,
+                    Model = modelForThisTurn
+                };
 
-                        finalResponseText += chunk.ContentDelta;
-                        contentBuffer += chunk.ContentDelta;
-                        
-                        // We don't stream normal conversational text into GMod since it clogs the chat box
-                        // We will just accumulate it and send it in one block when the stream finishes!
-                    }
+                string finalResponseText = "";
+                List<ToolCall>? toolCalls = null;
 
-                    if (chunk.ToolCalls != null && chunk.ToolCalls.Any())
+                await foreach (var chunk in _backend.StreamCompletionAsync(completionReq))
+                {
+                    if (chunk.ToolCalls != null && chunk.ToolCalls.Count > 0)
                     {
                         toolCalls = chunk.ToolCalls;
                     }
-                }
-                
-                // Flush remaining buffers at the end of the stream
-                if (thoughtBuffer.Length > 0)
-                {
-                    await _transport.SendChatAsync($"<thought> {thoughtBuffer}");
-                }
-                // Normal chat is buffered completely until the stream is done
-                if (contentBuffer.Length > 0)
-                {
-                    // Check if the AI wrote a raw Lua code block instead of using a tool
-                    var luaMatch = System.Text.RegularExpressions.Regex.Match(contentBuffer, @"```lua\s*(.*?)\s*```", System.Text.RegularExpressions.RegexOptions.Singleline);
-                    if (luaMatch.Success)
+                    if (!string.IsNullOrEmpty(chunk.Content))
                     {
-                        string codeToRun = luaMatch.Groups[1].Value.Trim();
-                        Console.WriteLine($"[Daemon] Detected fenced Lua block. Queuing for execution!");
-                        logEntry.ExecutedLua.Add(codeToRun);
-                        _pendingLuaExecution.Enqueue(codeToRun);
-                        
-                        // Send just the conversational text to chat without the giant code block
-                        string chatOnly = System.Text.RegularExpressions.Regex.Replace(contentBuffer, @"```lua\s*(.*?)\s*```", "[Executing Lua...]", System.Text.RegularExpressions.RegexOptions.Singleline);
-                        await _transport.SendChatAsync(chatOnly);
-                    }
-                    else if (LooksLikeLua(contentBuffer))
-                    {
-                        // AI returned raw Lua without a code fence — detect and run it
-                        Console.WriteLine($"[Daemon] Detected unfenced Lua response. Queuing for execution!");
-                        logEntry.ExecutedLua.Add(contentBuffer);
-                        _pendingLuaExecution.Enqueue(contentBuffer);
-                        await _transport.SendChatAsync("[Executing Lua...]");
-                    }
-                    else
-                    {
-                        await _transport.SendChatAsync(contentBuffer);
+                        finalResponseText += chunk.Content;
+                        var isThought = chunk.Content.TrimStart().StartsWith("<thought>");
+                        if (!isThought)
+                            Console.Write(chunk.Content);
                     }
                 }
 
-                Console.WriteLine(); // Newline after stream finishes
+                Console.WriteLine($"\n[Daemon] Stream Finished (Tool Calls: {toolCalls?.Count ?? 0})");
 
-                Console.WriteLine($"\n[Daemon] Stream Finished (Tool Calls: {toolCalls.Count})");
-
-                // If no tool calls, the AI is done thinking! Break the loop.
-                if (!toolCalls.Any())
+                if (toolCalls != null && toolCalls.Count > 0)
                 {
-                    var msg = ChatMessage.Assistant(finalResponseText);
+                    var msg = ChatMessage.AssistantTools(toolCalls);
                     messages.Add(msg);
+                    conv.History.Add(msg);
 
-                    // Prevent saving blank conversational filler
-                    if (!string.IsNullOrWhiteSpace(finalResponseText))
+                    foreach (var tc in toolCalls)
                     {
-                        _chatHistory.Add(msg);
-                    }
+                        Console.WriteLine($"\n[TOOL CALL] {tc.Function.Name}({tc.Function.Arguments})");
+                        await _transport.SendChatAsync($"[TOOL CALL] {tc.Function.Name}({tc.Function.Arguments})");
 
-                    // Write session log entry
-                    logEntry.Response = finalResponseText;
-                    _logger.Write(logEntry);
+                        using var argsDoc = JsonDocument.Parse(tc.Function.Arguments ?? "{}");
 
-                    // Flush any pending Lua execution that was queued from regex parsing of the final conversational stream block
-                    if (_pendingLuaExecution.Count > 0)
-                    {
-                        var immediateScripts = new List<string>();
-                        while (_pendingLuaExecution.TryDequeue(out var s)) immediateScripts.Add(s);
-
-                        foreach (var s in immediateScripts)
+                        var tool = GetActiveTools().FirstOrDefault(t => t.Name == tc.Function.Name);
+                        if (tool != null)
                         {
-                            await _transport.RunLuaAsync(s);
-                        }
-                    }
+                            var result = await tool.ExecuteAsync(argsDoc);
+                            var resultText = result.IsSuccess ? result.Output : $"Error: {result.Error}";
+                            Console.WriteLine($"[TOOL RESULT] {(result.IsSuccess ? "Success" : "Failed")}\n{resultText}");
+                            await _transport.SendChatAsync($"[TOOL RESULT] {(result.IsSuccess ? "Success" : "Failed")}\n{resultText}");
 
-                    break;
-                }
-
-                // AI returned tool calls. Add the assistant's message to history.
-                var toolMsg = ChatMessage.AssistantTools(toolCalls);
-                if (!string.IsNullOrWhiteSpace(finalResponseText)) 
-                {
-                    toolMsg.Content = finalResponseText;
-                }
-                messages.Add(toolMsg);
-                _chatHistory.Add(toolMsg);
-
-                // Execute each tool and append the results back to the chat history
-                foreach (var tc in toolCalls)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"\n[TOOL CALL] {tc.Function.Name}({tc.Function.Arguments})");
-                    Console.ResetColor();
-
-                    var tool = GetActiveTools().FirstOrDefault(t => t.Name == tc.Function.Name);
-                    if (tool != null)
-                    {
-                        try
-                        {
-                            var args = JsonDocument.Parse(tc.Function.Arguments);
-
-                            var resultTask = tool.ExecuteAsync(args);
-
-                            // If the tool injected Lua into the queue synchronously before going async, flush it.
-                            if (_pendingLuaExecution.Count > 0)
-                            {
-                                var immediateScripts = new List<string>();
-                                while (_pendingLuaExecution.TryDequeue(out var s)) immediateScripts.Add(s);
-
-                                foreach (var s in immediateScripts)
-                                {
-                                    await _transport.RunLuaAsync(s);
-                                }
-                            }
-
-                            var result = await resultTask;
-
-                            logEntry.ToolCalls.Add(new SessionLogger.ToolCallEntry(
-                                tc.Function.Name,
-                                tc.Function.Arguments,
-                                result.Content + (result.Error != null ? $"\nError: {result.Error}" : "")
-                            ));
-
-                            if (result.Success)
-                            {
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.WriteLine($"[TOOL RESULT] Success");
-                                Console.ForegroundColor = ConsoleColor.DarkGray;
-                                Console.WriteLine(result.Content);
-                                Console.ResetColor();
-                            }
-                            else
-                            {
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine($"[TOOL RESULT] Failed: {result.Error}");
-                                Console.ForegroundColor = ConsoleColor.DarkGray;
-                                Console.WriteLine(result.Content);
-                                Console.ResetColor();
-                            }
-
-                            // Feed the result back to the LLM so it knows it worked
-                            var resMsg = ChatMessage.ToolResult(tc.Id, result.Content + (result.Error != null ? $"\nError: {result.Error}" : ""));
+                            var resMsg = result.IsSuccess
+                                ? ChatMessage.ToolResult(tc.Id, resultText)
+                                : ChatMessage.ToolResult(tc.Id, $"Tool failed: {result.Error}");
                             messages.Add(resMsg);
-                            _chatHistory.Add(resMsg);
+                            conv.History.Add(resMsg);
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine($"[TOOL CRASH] {tool.Name}: {ex.Message}");
-                            Console.ResetColor();
-
-                            var failMsg = ChatMessage.ToolResult(tc.Id, $"Crashed: {ex.Message}");
-                            messages.Add(failMsg);
-                            _chatHistory.Add(failMsg);
+                            var nfMsg = ChatMessage.ToolResult(tc.Id, $"Tool '{tc.Function.Name}' not found.");
+                            messages.Add(nfMsg);
+                            conv.History.Add(nfMsg);
                         }
                     }
-                    else
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine($"[TOOL ERROR] Tool '{tc.Function.Name}' not found.");
-                        Console.ResetColor();
 
-                        var nfMsg = ChatMessage.ToolResult(tc.Id, "Error: Tool not found.");
-                        messages.Add(nfMsg);
-                        _chatHistory.Add(nfMsg);
+                    turnCount++;
+                    continue;
+                }
+
+                // No tool calls — process response text
+                if (!string.IsNullOrWhiteSpace(finalResponseText))
+                {
+                    var isThought = finalResponseText.TrimStart().StartsWith("<thought>");
+                    if (!isThought)
+                    {
+                        var msg = ChatMessage.Assistant(finalResponseText);
+                        conv.History.Add(msg);
+
+                        // Log to session
+                        logEntry.Response = finalResponseText;
+                        _logger.Write(logEntry);
                     }
                 }
 
-                turnCount++;
+                // Dispatch pending Lua to GMod
+                while (_pendingLuaExecution.TryDequeue(out var luaCode))
+                {
+                    await _transport.RunLuaAsync($"__AI_CONV_ID = \"{conv.ConversationId}\"\n" + luaCode);
+                }
+                if (!string.IsNullOrWhiteSpace(finalResponseText))
+                {
+                    var isThought = finalResponseText.TrimStart().StartsWith("<thought>");
+                    if (!isThought)
+                    {
+                        // Extract and broadcast the response
+                        var isModelSwitch = finalResponseText.Contains("[Model Switch]");
+                        if (!isModelSwitch)
+                        {
+                            var luaBlocks = new List<string>();
+                            var stripped = System.Text.RegularExpressions.Regex.Replace(
+                                finalResponseText,
+                                @"```(?:lua|LUA)\s*\n?(.*?)\n?```",
+                                m => { luaBlocks.Add(m.Groups[1].Value); return ""; },
+                                System.Text.RegularExpressions.RegexOptions.Singleline
+                            );
+
+                            // Broadcast non-code text
+                            foreach (var line in stripped.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0))
+                            {
+                                await _transport.SendChatAsync($"[AI] {line}");
+                            }
+
+                            // Queue Lua blocks
+                            foreach (var block in luaBlocks)
+                            {
+                                Console.WriteLine($"[Daemon] Queuing fenced Lua block for execution.");
+                                _pendingLuaExecution.Enqueue(block);
+                            }
+
+                            // Also check for unfenced Lua
+                            if (luaBlocks.Count == 0 && LooksLikeLua(finalResponseText))
+                            {
+                                Console.WriteLine("[Daemon] Detected unfenced Lua response. Queuing for execution!");
+                                _pendingLuaExecution.Enqueue(finalResponseText);
+                            }
+                        }
+                    }
+                }
+
+                while (_pendingLuaExecution.TryDequeue(out var luaCode))
+                {
+                    await _transport.RunLuaAsync($"__AI_CONV_ID = \"{conv.ConversationId}\"\n" + luaCode);
+                }
+
+                break;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Daemon Error] {ex}");
-            await _transport.SendChatAsync($"Daemon Error: {ex.Message}");
+            Console.WriteLine($"[Daemon] Error processing request: {ex.Message}");
+            await _transport.SendChatAsync($"[AI Error] {ex.Message}");
         }
     }
 
-    /// <summary>
-    /// Classify whether a prompt is "complex" (true) or "simple" (false).
-    /// Complex = needs the main model. Simple = a cheap fast model is fine.
-    /// </summary>
-    /// <summary>
-    /// Heuristic: does this response look like raw Lua code rather than a prose reply?
-    /// Triggered when the AI forgets the code fence but still emits valid Lua.
-    /// </summary>
     private static bool LooksLikeLua(string text)
     {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        var t = text.TrimStart();
-        // Strong signals: starts with a Lua comment or known Lua call patterns
-        if (t.StartsWith("--"))                   return true;
-        if (t.StartsWith("local "))               return true;
-        if (t.StartsWith("function "))            return true;
-        if (t.StartsWith("hook."))                return true;
-        if (t.StartsWith("RunClientLua("))        return true;
-        if (t.StartsWith("RunSharedLua("))        return true;
-        if (t.StartsWith("timer."))               return true;
-        if (t.StartsWith("net."))                 return true;
-        if (t.StartsWith("if CLIENT"))            return true;
-        if (t.StartsWith("if SERVER"))            return true;
-        // Weaker: count Lua-isms vs English words; Lua wins if density is high
-        int luaHits = 0;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bhook\.Add\b"))    luaHits += 3;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\blocal\s+\w+\s*=")) luaHits += 2;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bend\b"))            luaHits += 2;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bfunction\b"))       luaHits += 2;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"RunClientLua|RunSharedLua")) luaHits += 5;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bnet\.Start\b"))   luaHits += 3;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\btimer\.\w+\b"))  luaHits += 3;
-        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bCompileString\b")) luaHits += 3;
-        // Penalise if it has sentence-like prose (multiple capital letters starting lines)
-        int proseLines = System.Text.RegularExpressions.Regex.Matches(text, @"^[A-Z][a-z]", System.Text.RegularExpressions.RegexOptions.Multiline).Count;
-        return luaHits >= 5 && proseLines <= 2;
+        var luaKeywords = new[] { "local ", "function ", "if ", "end", "RunSharedLua", "RunClientLua", "ents.", "player.", "hook.", "timer." };
+        int hits = luaKeywords.Count(kw => text.Contains(kw));
+        return hits >= 3;
     }
 
-    private async Task<bool> ClassifyPromptAsync(string prompt)
+    private async Task<string> ClassifyPromptAsync(string prompt, string routerModel)
     {
-        try
+        var req = new CompletionRequest
         {
-            var req = new CompletionRequest
+            Model = routerModel,
+            Messages = new List<ChatMessage>
             {
-                Model = _routerModel!,
-                Messages = new List<ChatMessage>
-                {
-                    ChatMessage.System(
-                        "Classify the complexity of a Garry's Mod AI request. Reply with ONE word only: SIMPLE or COMPLEX. No explanation.\n\n" +
-                        "SIMPLE (cheap model fine):\n" +
-                        "- Spawn a single prop or effect\n" +
-                        "- Set a player stat (health, speed, gravity)\n" +
-                        "- Play a sound or basic particle\n" +
-                        "- Single short hook or timer\n\n" +
-                        "COMPLEX (needs capable model):\n" +
-                        "- Any SWEP or weapon\n" +
-                        "- Any scripted entity (SENT)\n" +
-                        "- Any HUD or UI element\n" +
-                        "- Physics systems or movement mechanics\n" +
-                        "- Multi-step or multi-file tasks\n" +
-                        "- Error debugging or fixing\n" +
-                        "- Anything with hooks, net messages, or custom logic\n" +
-                        "- When in doubt: COMPLEX"),
-                    ChatMessage.User(prompt)
-                },
-                Temperature = 0,
-                MaxTokens = 4
-            };
+                ChatMessage.System("Classify the following GMod Lua request as SIMPLE or COMPLEX. SIMPLE = basic spawn, give item, one-liner effects. COMPLEX = custom SWEP, multi-file addon, advanced physics, HUD system. Reply with only SIMPLE or COMPLEX."),
+                ChatMessage.User(prompt)
+            },
+            Stream = false
+        };
 
-            var result = await _backend.GenerateCompletionAsync(req);
-            var answer = result.Content?.Trim().ToUpperInvariant() ?? "";
-
-            // Only route cheap if explicitly SIMPLE with no COMPLEX anywhere in the response
-            bool isSimple = answer.Contains("SIMPLE") && !answer.Contains("COMPLEX");
-
-            Console.ForegroundColor = ConsoleColor.DarkCyan;
-            Console.WriteLine($"[Router] '{prompt.Substring(0, Math.Min(50, prompt.Length))}' => \"{result.Content?.Trim()}\" => {(isSimple ? "SIMPLE" : "COMPLEX")}");
-            Console.ResetColor();
-
-            return !isSimple; // true = COMPLEX = use main model
-        }
-        catch (Exception ex)
+        string result = "COMPLEX";
+        await foreach (var chunk in _backend.StreamCompletionAsync(req))
         {
-            Console.WriteLine($"[Router] Classification failed ({ex.Message}), defaulting to main model.");
-            return true; // Fail safe: always use main model on error
+            if (!string.IsNullOrEmpty(chunk.Content))
+                result = chunk.Content.Trim().ToUpperInvariant();
         }
+        return result.Contains("SIMPLE") ? "SIMPLE" : "COMPLEX";
     }
 }
