@@ -124,12 +124,12 @@ local function ConnectToDaemon()
                             local sf = CompileString(c, scriptId .. "_Shared", false)
                             if isstring(sf) then
                                 print("[AIPlayground] Shared Lua Syntax Error: " .. sf)
-                                AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sf .. "\n\nFailing code:\n```lua\n" .. c .. "\n```\n\nPlease fix and try again.")
+                                AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sf .. "\n\nFailing code:\n```lua\n" .. c .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                             else
                                 local s, e = pcall(sf)
                                 if not s then
                                     print("[AIPlayground] Shared Lua Runtime Error: " .. tostring(e))
-                                    AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nFailing code:\n```lua\n" .. c .. "\n```\n\nPlease fix and try again.")
+                                    AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nFailing code:\n```lua\n" .. c .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                                 end
                             end
                             net.Start("AIPlayground_RunLuaClient")
@@ -141,13 +141,13 @@ local function ConnectToDaemon()
                     local func = CompileString(safeCode, scriptId, false)
                     if isstring(func) then
                         print("[AIPlayground] Inline Lua Syntax Error: " .. func)
-                        AskDaemonServer("You got a Server Lua Syntax Error:\n" .. func .. "\n\nFailing code:\n```lua\n" .. safeCode .. "\n```\n\nPlease fix and try again.")
+                        AskDaemonServer("You got a Server Lua Syntax Error:\n" .. func .. "\n\nFailing code:\n```lua\n" .. safeCode .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                     else
                         setfenv(func, env)
                         local ok, err = pcall(func)
                         if not ok then
                             print("[AIPlayground] Inline Lua Runtime Error: " .. tostring(err))
-                            AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nFailing code:\n```lua\n" .. safeCode .. "\n```\n\nPlease fix and try again.")
+                            AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nFailing code:\n```lua\n" .. safeCode .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                         else
                             print("[AIPlayground] Inline Lua executed successfully.")
                             -- Missing path check
@@ -208,12 +208,12 @@ local function ConnectToDaemon()
                             local sharedFunc = CompileString(code, scriptId .. "_Shared", false)
                             if isstring(sharedFunc) then
                                 print("[AIPlayground] Shared Lua Syntax Error: " .. sharedFunc)
-                                AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sharedFunc .. "\n\nPlease fix the script and try again.")
+                                AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sharedFunc .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                             else
                                 local s, e = pcall(sharedFunc)
                                 if not s then
                                     print("[AIPlayground] Shared Lua Runtime Error: " .. tostring(e))
-                                    AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nPlease fix the script and try again.")
+                                    AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                                 end
                             end
 
@@ -227,13 +227,13 @@ local function ConnectToDaemon()
                     local func = CompileString(safeCode, scriptId, false)
                     if isstring(func) then
                         print("[AIPlayground] Lua Syntax Error: " .. func)
-                        AskDaemonServer("You got a Server Lua Syntax Error:\n" .. func .. "\n\nPlease fix the script and try again.")
+                        AskDaemonServer("You got a Server Lua Syntax Error:\n" .. func .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                     else
                         setfenv(func, env)
                         local success, err = pcall(func)
                         if not success then
                             print("[AIPlayground] Lua Runtime Error: " .. tostring(err))
-                            AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nPlease fix the script and try again.")
+                            AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                         else
                             print("[AIPlayground] Lua executed successfully without errors.")
                             
