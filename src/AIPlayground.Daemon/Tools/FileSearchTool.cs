@@ -54,9 +54,10 @@ public sealed class FileSearchTool : ITool
             var basePath = lastSlash >= 0 ? pattern.Substring(0, lastSlash + 1) : "";
             var searchStr = lastSlash >= 0 ? pattern.Substring(lastSlash + 1) : pattern;
 
-            // Define Lua logic that calculates bounds while searching
-            var uniqueId = Guid.NewGuid().ToString("N");
-            
+            // Determine if recursive search is needed (only recurse if pattern has no specific filename filter)
+            bool recursive = !searchStr.Contains('.');
+            var luaRecursive = recursive ? "true" : "false";
+
             var luaScript = $$"""
             if not file.Exists("aiplayground/asset_cache.json", "DATA") then
                 file.CreateDir("aiplayground")
@@ -132,7 +133,7 @@ public sealed class FileSearchTool : ITool
                 
                 local _, dirs = file.Find(basePath .. "*", "{{pathId}}")
                 
-                if dirs then
+                if dirs and {{luaRecursive}} then
                     for _, d in ipairs(dirs) do
                         results = results .. RecursiveSearch(basePath .. d .. "/", searchPattern)
                     end
