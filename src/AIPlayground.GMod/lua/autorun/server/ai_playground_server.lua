@@ -126,7 +126,11 @@ local function ConnectToDaemon()
                                 print("[AIPlayground] Shared Lua Syntax Error: " .. sf)
                                 AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sf .. "\n\nFailing code:\n```lua\n" .. c .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                             else
+                                SWEP = SWEP or {Primary = {}, Secondary = {}}
+                                ENT = ENT or {}
                                 local s, e = pcall(sf)
+                                SWEP = nil
+                                ENT = nil
                                 if not s then
                                     print("[AIPlayground] Shared Lua Runtime Error: " .. tostring(e))
                                     AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nFailing code:\n```lua\n" .. c .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
@@ -211,7 +215,11 @@ local function ConnectToDaemon()
                                 print("[AIPlayground] Shared Lua Syntax Error: " .. sharedFunc)
                                 AskDaemonServer("You got a Server Lua Syntax Error in RunSharedLua:\n" .. sharedFunc .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                             else
+                                SWEP = SWEP or {Primary = {}, Secondary = {}}
+                                ENT = ENT or {}
                                 local s, e = pcall(sharedFunc)
+                                SWEP = nil
+                                ENT = nil
                                 if not s then
                                     print("[AIPlayground] Shared Lua Runtime Error: " .. tostring(e))
                                     AskDaemonServer("You got a Server Lua Runtime Error in RunSharedLua:\n" .. tostring(e) .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
