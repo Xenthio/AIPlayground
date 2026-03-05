@@ -311,18 +311,27 @@ public sealed class AgentOrchestrator
                                    (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
             };
 
-            // Inject previous conversation history BEFORE adding the new message (if enabled)
+            // Always inject last 6 messages as short-term context (error fixer needs to know what it was trying to do)
+            // Full history (opt-in via !history on) goes beyond that
             if (_useHistory)
             {
                 messages.AddRange(_chatHistory);
+            }
+            else if (_chatHistory.Count > 0)
+            {
+                // Short-term window: last 6 messages regardless of history toggle
+                var window = _chatHistory.Skip(Math.Max(0, _chatHistory.Count - 6)).ToList();
+                messages.AddRange(window);
             }
 
             // Add the new user prompt
             var userMsg = ChatMessage.User($"[From {player}]: {prompt}");
             messages.Add(userMsg);
 
-            // Save ONLY the new user prompt to history (so we don't accidentally save history recursively inside itself)
+            // Save ONLY the new user prompt to history
             _chatHistory.Add(userMsg);
+            // Cap short-term history at 40 messages to prevent unbounded growth
+            if (_chatHistory.Count > 40) _chatHistory.RemoveAt(0);
 
             int turnCount = 0;
             const int maxTurns = 5; // Prevent infinite loops

@@ -54,8 +54,8 @@ public sealed class FileSearchTool : ITool
             var basePath = lastSlash >= 0 ? pattern.Substring(0, lastSlash + 1) : "";
             var searchStr = lastSlash >= 0 ? pattern.Substring(lastSlash + 1) : pattern;
 
-            // Determine if recursive search is needed (only recurse if pattern has no specific filename filter)
-            bool recursive = !searchStr.Contains('.');
+            // Only recurse if searchStr is bare wildcard (no pattern targeting specific files)
+            bool recursive = searchStr == "*";
             var luaRecursive = recursive ? "true" : "false";
             var uniqueId = Guid.NewGuid().ToString("N");
 
