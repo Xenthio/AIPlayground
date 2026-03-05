@@ -331,6 +331,7 @@ public sealed class AgentOrchestrator
                                    $"- SWEP projectiles: offset spawn pos so they don't clip the player\n" +
                                    $"- `DynamicLight` is CLIENT only\n" +
                                    $"- SWEP table MUST pre-declare sub-tables: `local SWEP = {{}}; SWEP.Primary = {{}}; SWEP.Secondary = {{}}` before setting `.Primary.ClipSize` etc. — indexing nil = crash\n" +
+                                   $"- **gm_claude sandbox hook force-injects `SWEP.Primary`/`Secondary` after `weapons.Register`** — always set ALL Primary/Secondary fields before `weapons.Register`, never rely on post-register assignment\n" +
                                    $"- `RequestingPlayer:ChatPrint()` — ALWAYS guard with `if SERVER then`. Never call at top-level unfenced code — the realm may be CLIENT.\n\n" +
                                    $"## Client-Side Hooks (CLIENT realm only)\n" +
                                    $"- `EntityTakeDamage` does NOT fire on the client. For client-side damage detection, check `LocalPlayer():Health()` deltas in `HUDPaint` or a `Think` hook.\n" +
