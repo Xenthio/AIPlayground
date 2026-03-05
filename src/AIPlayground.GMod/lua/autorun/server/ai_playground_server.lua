@@ -150,9 +150,10 @@ local function ConnectToDaemon()
                             AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nFailing code:\n```lua\n" .. safeCode .. "\n```\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
                         else
                             print("[AIPlayground] Inline Lua executed successfully.")
-                            -- Missing path check
+                            -- Missing path check (strip line comments first to avoid false positives)
+                            local codeNoComments = string.gsub(code, "%-%-[^\n]*", "")
                             local missingPaths = {}
-                            for path in string.gmatch(code, "[\"']([^\"']+)[\"']") do
+                            for path in string.gmatch(codeNoComments, "[\"']([^\"']+)[\"']") do
                                 if not string.find(path, "%*") and (string.StartWith(path, "models/") or string.StartWith(path, "sound/") or string.StartWith(path, "materials/")) then
                                     if string.find(path, "%.mdl$") or string.find(path, "%.wav$") or string.find(path, "%.vmt$") or string.find(path, "%.mp3$") then
                                         if not file.Exists(path, "GAME") then
@@ -237,9 +238,10 @@ local function ConnectToDaemon()
                         else
                             print("[AIPlayground] Lua executed successfully without errors.")
                             
-                            -- Extract string paths to test
+                            -- Extract string paths to test (strip line comments first to avoid false positives)
+                            local scriptNoComments = string.gsub(script, "%-%-[^\n]*", "")
                             local missingPaths = {}
-                            for path in string.gmatch(script, "[\"']([^\"']+)[\"']") do
+                            for path in string.gmatch(scriptNoComments, "[\"']([^\"']+)[\"']") do
                                 -- Ignore paths that contain asterisks (search patterns) and ignore partial string fragments
                                 if not string.find(path, "%*") and (string.StartWith(path, "models/") or string.StartWith(path, "sound/") or string.StartWith(path, "materials/")) then
                                     if string.find(path, "%.mdl$") or string.find(path, "%.wav$") or string.find(path, "%.vmt$") or string.find(path, "%.mp3$") then
