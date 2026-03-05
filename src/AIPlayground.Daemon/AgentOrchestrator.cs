@@ -300,7 +300,8 @@ public sealed class AgentOrchestrator
                                    (_projectsEnabled ? $"## Multi-File Addon Projects\n" +
                                    $"If the user explicitly asks you to create a permanent addon, swep, or project, use `write_file` to save it to your virtual root (e.g. `my_cool_addon/lua/weapons/weapon_cool.lua`). Do NOT use files for simple temporary requests.\n\n" : "") +
                                    $"## Response Format (One-Shot Lua)\n" +
-                                   $"If you just need to spawn something or execute a command, simply write your raw Lua code inside a Markdown ```lua code block. Do NOT use any tools. The system will automatically extract and execute it on the server immediately!\n" +
+                                   $"If you need to find valid model/sound/material paths, call `search_assets` first. Always verify paths before using them in code.\n" +
+                                   $"For everything else, write your raw Lua code inside a Markdown ```lua code block — do NOT use file/project tools for simple requests. The system will automatically extract and execute it on the server immediately!\n" +
                                    $"Exactly ONE fenced ```lua block. No text outside it. Begin with:\n" +
                                    $"-- PLAN: realm, approach, cleanup\n" +
                                    $"End with:\n" +
