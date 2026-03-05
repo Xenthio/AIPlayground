@@ -275,7 +275,9 @@ public sealed class AgentOrchestrator
                                    $"- `npc_grenade_frag` needs `ent:Fire(\"SetTimer\", seconds)` or it won't explode\n" +
                                    $"- Hard 8192 entity limit — batch spawns, use `SafeRemoveEntityDelayed(ent, seconds)`\n" +
                                    $"- SWEP projectiles: offset spawn pos so they don't clip the player\n" +
-                                   $"- `DynamicLight` is CLIENT only\n\n" +
+                                   $"- `DynamicLight` is CLIENT only\n" +
+                                   $"- SWEP table MUST pre-declare sub-tables: `local SWEP = {{}}; SWEP.Primary = {{}}; SWEP.Secondary = {{}}` before setting `.Primary.ClipSize` etc. — indexing nil = crash\n" +
+                                   $"- `Player(N):ChatPrint()` — ALWAYS guard with `if SERVER then` and `if IsValid(ply) then`. Never call at top-level unfenced code — the realm may be CLIENT.\n\n" +
                                    $"## Client-Side Hooks (CLIENT realm only)\n" +
                                    $"- `EntityTakeDamage` does NOT fire on the client. For client-side damage detection, check `LocalPlayer():Health()` deltas in `HUDPaint` or a `Think` hook.\n" +
                                    $"- `OnEntityCreated` fires on client, but entities may not have all properties set yet.\n" +
@@ -302,8 +304,8 @@ public sealed class AgentOrchestrator
                                    $"For everything else, write your raw Lua code inside a Markdown ```lua code block — do NOT use file/project tools for simple requests. The system will automatically extract and execute it on the server immediately!\n" +
                                    $"Exactly ONE fenced ```lua block. No text outside it. Begin with:\n" +
                                    $"-- PLAN: realm, approach, cleanup\n" +
-                                   $"End with:\n" +
-                                   $"Player({userId}):ChatPrint(\"feedback message\")\n\n" +
+                                   $"End with (server-guarded):\n" +
+                                   $"if SERVER then local _p = Player({userId}); if IsValid(_p) then _p:ChatPrint(\"feedback message\") end end\n\n" +
                                    $"## Game State\n" +
                                    $"{dynamicContext}\n\n" +
                                    (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
