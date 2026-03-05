@@ -89,6 +89,8 @@ public sealed class AgentOrchestrator
         await _transport.StartAsync(cancellationToken);
     }
 
+    public AgentOrchestrator(string gmodBasePath, string addonPath, IBackendProvider backend, IGModTransport transport, MemoryRetrievalSystem memorySystem)
+    {
         _addonPath = addonPath;
         _backend = backend;
         _transport = transport;
