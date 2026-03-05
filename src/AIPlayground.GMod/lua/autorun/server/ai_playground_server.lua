@@ -242,7 +242,9 @@ local function ConnectToDaemon()
                         local success, err = pcall(func)
                         if not success then
                             print("[AIPlayground] Lua Runtime Error: " .. tostring(err))
-                            AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
+                            if not __AI_RUN_EXAMPLE then
+                                AskDaemonServer("You got a Server Lua Runtime Error:\n" .. tostring(err) .. "\n\nFix ONLY the error above. Output the corrected version of that exact script in full — do NOT write a new generic replacement.")
+                            end
                         else
                             print("[AIPlayground] Lua executed successfully without errors.")
                             
@@ -260,7 +262,7 @@ local function ConnectToDaemon()
                                 end
                             end
                             
-                            if #missingPaths > 0 then
+                            if #missingPaths > 0 and not __AI_RUN_EXAMPLE then
                                 -- Deduplicate missing paths list so we don't spam the same error string
                                 local hash = {}
                                 local uniquePaths = {}

@@ -224,8 +224,9 @@ public sealed class AgentOrchestrator
                 if (File.Exists(examplePath))
                 {
                     var code = await File.ReadAllTextAsync(examplePath);
-                    _pendingLuaExecution.Enqueue(code);
+                    code = code.Replace("{{ID}}", userId.ToString());
                     await _transport.SendChatAsync($"Running example: {exampleName}");
+                    await _transport.RunLuaAsync("__AI_RUN_EXAMPLE = true\n" + code + "\n__AI_RUN_EXAMPLE = nil");
                 }
                 else
                 {
