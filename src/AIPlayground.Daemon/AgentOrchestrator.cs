@@ -296,7 +296,7 @@ public sealed class AgentOrchestrator
                                    $"- `HL2Hud.healthEvent(name)` / `HL2Hud.suitEvent(name)` / `HL2Hud.auxEvent(name)` — fire animation events manually if needed.\n" +
                                    $"\n" +
                                    $"## Positioning\n" +
-                                   $"Always position relative to the requesting player. Use `Player({userId})` to get the requesting player (their UserID is already substituted). `ply:ChatPrint(text)` is valid for sending chat messages to a player.\n\n" +
+                                   $"Use `RequestingPlayer` (pre-injected into the sandbox) to get the player who sent the request — always valid, no UserID guessing needed. `Player({userId})` also works as a fallback.\n\n" +
                                    (_projectsEnabled ? $"## Multi-File Addon Projects\n" +
                                    $"If the user explicitly asks you to create a permanent addon, swep, or project, use `write_file` to save it to your virtual root (e.g. `my_cool_addon/lua/weapons/weapon_cool.lua`). Do NOT use files for simple temporary requests.\n\n" : "") +
                                    $"## Response Format (One-Shot Lua)\n" +
@@ -305,7 +305,7 @@ public sealed class AgentOrchestrator
                                    $"Exactly ONE fenced ```lua block. No text outside it. Begin with:\n" +
                                    $"-- PLAN: realm, approach, cleanup\n" +
                                    $"End with (server-guarded):\n" +
-                                   $"if SERVER then local _p = Player({userId}); if IsValid(_p) then _p:ChatPrint(\"feedback message\") end end\n\n" +
+                                   $"if SERVER then if IsValid(RequestingPlayer) then RequestingPlayer:ChatPrint(\"feedback message\") end end\n\n" +
                                    $"## Game State\n" +
                                    $"{dynamicContext}\n\n" +
                                    (!string.IsNullOrWhiteSpace(relevantExamples) ? $"{relevantExamples}\n\n" : ""))
