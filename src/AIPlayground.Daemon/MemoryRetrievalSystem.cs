@@ -140,6 +140,23 @@ public class MemoryRetrievalSystem
         // The actual file writing is handled by the RecordExampleTool to keep folder structure
     }
 
+    public async Task<List<(string Description, float Score, bool IsDoc)>> SearchAsync(string query, int topK = 5)
+    {
+        if (_examples.Count == 0) return new();
+
+        var queryEmbedding = await _backend.GenerateEmbeddingAsync(query);
+
+        return _examples
+            .Select(ex => (
+                Description: ex.Description,
+                Score: TensorPrimitives.CosineSimilarity(queryEmbedding, ex.Embedding!),
+                IsDoc: ex.IsDoc
+            ))
+            .OrderByDescending(x => x.Score)
+            .Take(topK)
+            .ToList();
+    }
+
     public async Task<string> GetRelevantExamplesAsync(string query, int topK = 2)
     {
         if (_examples.Count == 0) return string.Empty;

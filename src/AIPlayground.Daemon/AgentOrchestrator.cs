@@ -210,26 +210,24 @@ public sealed class AgentOrchestrator
             if (prompt.StartsWith("!search "))
             {
                 var query = prompt.Substring(8).Trim();
-                Console.WriteLine($"[Daemon] Testing semantic search for: {query}");
-                var relevant = await _memorySystem.GetRelevantExamplesAsync(query, topK: 3);
-                
-                if (string.IsNullOrWhiteSpace(relevant))
-                {
-                    await _transport.SendChatAsync("Semantic Search: No highly relevant examples found (Score < 0.3)");
-                }
-                else
-                {
-                    // Print the raw context output to the Daemon console so you can inspect the exact code blocks
-                    Console.ForegroundColor = ConsoleColor.Magenta;
-                    Console.WriteLine("\n=== SEMANTIC SEARCH RESULTS ===");
-                    Console.WriteLine(relevant);
-                    Console.WriteLine("===============================\n");
-                    Console.ResetColor();
+                Console.WriteLine($"[Daemon] Semantic search for: {query}");
+                var results = await _memorySystem.SearchAsync(query, topK: 5);
 
-                    // Send a small summary back to Garry's Mod chat so it doesn't spam the chatbox
-                    var matchCount = relevant.Split("Player Prompt:").Length - 1;
-                    await _transport.SendChatAsync($"Semantic Search: Found {matchCount} highly relevant examples! Check Daemon Console for raw code.");
+                if (results.Count == 0)
+                {
+                    await _transport.SendChatAsync("!search: No examples in pool.");
+                    return;
                 }
+
+                var lines = new System.Text.StringBuilder();
+                lines.AppendLine($"Search: \"{query}\"");
+                foreach (var r in results)
+                {
+                    var tag = r.IsDoc ? "[doc]" : "[ex]";
+                    var bar = r.Score >= 0.68f ? "███" : r.Score >= 0.3f ? "██░" : "█░░";
+                    lines.AppendLine($"{bar} {r.Score:F2} {tag} {r.Description}");
+                }
+                await _transport.SendChatAsync(lines.ToString().TrimEnd());
                 return;
             }
 
